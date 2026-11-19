@@ -1,0 +1,1 @@
+export const HELLDESK_AUDIENCE = 'helldesk-local';

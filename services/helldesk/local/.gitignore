@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.db
+*.db-wal
+*.db-shm
+config.json
+reports/
+.json
+# runtime artifacts (logs / test output), never committed
+daemon.err.log
+daemon.out.log
+hostout.txt
+testout.txt

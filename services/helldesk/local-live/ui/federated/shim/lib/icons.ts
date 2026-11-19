@@ -1,0 +1,26 @@
+// NAI icon vocabulary backed exclusively by Tencent TDesign (MIT).
+// Stable application names let federated views share one visual language.
+export {
+ ActivityIcon as Activity, ErrorTriangleIcon as AlertTriangle,
+ ArrowDownIcon as ArrowDown, ArrowRightDownIcon as ArrowDownRight,
+ ArrowLeftIcon as ArrowLeft, ArrowRightIcon as ArrowRight, ArrowUpIcon as ArrowUp,
+ RobotIcon as Bot, CheckIcon as Check, CheckCircleIcon as CheckCircle,
+ ChevronDownIcon as ChevronDown, ChevronLeftIcon as ChevronLeft,
+ ChevronRightIcon as ChevronRight, ChevronUpIcon as ChevronUp,
+ CircleIcon as Circle, CheckCircleFilledIcon as CircleDot, TimeIcon as Clock,
+ CopyIcon as Copy, PalaceIcon as Crown, BrowseIcon as Eye, BrowseOffIcon as EyeOff,
+ BuildingIcon as Factory, FileIcon as FileText, FlagIcon as Flag, FolderIcon as FolderGit2,
+ GitBranchIcon as GitBranch, GitMergeIcon as GitMerge, GitPullRequestIcon as GitPullRequest,
+ HashtagIcon as Hash, SystemComponentsIcon as Hexagon, LayersIcon as Layers,
+ DashboardIcon as LayoutDashboard, LoadingIcon as Loader2, LoadingIcon as LoaderCircle,
+ StickyNoteIcon as Memo, ChatIcon as MessageSquare, RelationIcon as Network,
+ PauseIcon as Pause, PauseCircleIcon as PauseCircle, PlayIcon as Play, PlayCircleIcon as PlayCircle,
+ AddIcon as Plus, SoundIcon as Radio, RefreshIcon as RefreshCw, RefreshIcon as RotateCw,
+ SaveIcon as Save, ControlPlatformIcon as Scale, SearchIcon as Search, SendIcon as Send,
+ SettingIcon as Settings, ShieldErrorIcon as Shield, SecuredIcon as ShieldCheck,
+ FilterIcon as SlidersHorizontal, StarIcon as Sparkles, TagIcon as Tags,
+ TerminalIcon as Terminal, RectangleIcon as ToggleLeft, CheckRectangleIcon as ToggleRight,
+ DeleteIcon as Trash2, UserIcon as User, UsergroupIcon as Users,
+ CodeIcon as Variable, ToolsIcon as Wrench, CloseIcon as X,
+ CloseCircleIcon as XOctagon, ThunderIcon as Zap,
+} from 'tdesign-icons-react';

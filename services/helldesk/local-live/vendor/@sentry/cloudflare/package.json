@@ -1,0 +1,1 @@
+{"name":"@sentry/cloudflare","version":"0.0.0-local","private":true,"type":"module","main":"./index.ts","types":"./index.ts"}

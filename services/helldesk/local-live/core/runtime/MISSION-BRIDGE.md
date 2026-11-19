@@ -1,0 +1,19 @@
+# Durable local mission dispatch
+
+Local Department schedules dependencies, prepares per-task read-source checkouts and submits work to the existing local daemon's `/v1/missions` API. That daemon owns Kilo mutation, read-only independent review and rework. The bridge records `metadata.local_mission`, polls durable state, and closes a task only after machine review and successful local landing. It never calls a preparatory git commit an agent execution.
+
+When an output repository is configured, it is the writable mission workspace. The input repository is cloned for reading; it is not recursively copied over the destination. Independent tasks have separate read-source checkout directories, while the existing daemon's workspace lease serializes writers sharing an output repository. Completed dependency workspace paths are supplied to consumers.
+
+Repository routing and branch are snapshotted into task metadata at creation. Changing department settings for task B cannot redirect task A's dispatch or landing. Legacy queued tasks pin routing at first dispatch; an already-running legacy mission without a snapshot reports a routing blocker rather than guessing a destination. Original input paths are also supplied as read-only context because git clones omit uncommitted files. In single-repo mode work and its final commit remain in the isolated task checkout, leaving the original input unchanged unless an explicit remote is configured.
+
+TaskStudio `depends_on` becomes the existing `blocks` edges. A failed prerequisite stays blocking. Direct hook/start/dispatch paths also check prerequisites. No separate dependency database was introduced.
+
+Migration 0005 adds per-mission acceptance gates. New mission defaults are generic task scope, functional behavior, regressions and artifact provenance; the turbine diagnostic gates are not reused. Mutation concurrency uses `daemon.maxConcurrentJobs`, and one mission cannot be advanced by overlapping interval ticks.
+
+Async steering is persisted through `/v1/missions/:id/steer`, applied at the next mutation/review boundary. A changed objective supersedes the previous revision instead of accepting stale review. `/cancel` aborts the current owned mutation. Advisory `interrupt` remains a nudge, not an implicit stop. Machine `VERIFIED_10_10` is not CTO production acceptance.
+
+The NAI-Lattice canonical ExcellenceGovernor endpoints and the local daemon are distinct deployments. TaskStudio tasks use the local daemon; their mission ID is in ticket metadata. The old canonical `/excellenceGovernor` display must not be interpreted as this mission's evidence.
+
+Required runtime: local daemon running with `autonomy.enabled=true`, configured worker provider, and a working reviewer transport/model (Codex/Luna is chosen by the launcher). This change does not start services or make model calls. Missing daemon/auth/config becomes an explicit dispatch error. Migration 0006 adds durable idempotency keys and request hashes. New submissions can retry a lost response without duplicating missions; conflicting payloads are rejected. Legacy ambiguous submissions without a key still require reconciliation or explicit repair.
+
+Implementation checks: `bunx tsc --noEmit -p services/helldesk/local-live/tsconfig.json`; focused dependency/reconciler fixture: `bun test services/helldesk/local-live/core/runtime/local-reconciler.test.ts`. The fixture injects mission submission and does not call models. User owns application acceptance.

@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+    "target": "es2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "esnext",
+    "types": ["vite/client"],
+    "allowArbitraryExtensions": true,
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    /* Paths: shim layer + verbatim federated original sources */
+    "paths": {
+      "@/*": ["./federated/shim/*"],
+      "@/components/helldesk/*": ["./federated/src/components/helldesk/*"],
+      "@/lib/helldesk/*": ["./federated/src/lib/helldesk/*"],
+      "next/navigation": ["./federated/shim/next/navigation.ts"],
+      "next/link": ["./federated/shim/next/link.tsx"]
+    },
+
+    /* Linting — relaxed so the federated (unmodified) original components typecheck */
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["src", "federated/src", "federated/shim"]
+}

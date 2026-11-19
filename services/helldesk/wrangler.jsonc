@@ -1,0 +1,243 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "account_id": "e115e769bcdd4c3d66af59d3332cb394",
+  "name": "helldesk",
+  "main": "src/helldesk.worker.ts",
+  "compatibility_date": "2026-02-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "dev": { "port": 8803 },
+  "placement": { "mode": "smart" },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true,
+      "invocation_logs": true,
+    },
+    "traces": {
+      "enabled": true,
+      "persist": true,
+      "head_sampling_rate": 0.1,
+    },
+  },
+  "logpush": true,
+  "upload_source_maps": true,
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
+  "routes": [
+    {
+      "pattern": "helldesk.kiloapps.io/*",
+      "zone_name": "kiloapps.io",
+    },
+  ],
+  "workers_dev": false,
+
+  "containers": [
+    {
+      "class_name": "DepartmentContainerDO",
+      "image": "./container/Dockerfile",
+      "instance_type": "standard-4",
+      "max_instances": 500,
+    },
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "HELLDESK_USER", "class_name": "HelldeskUserDO" },
+      { "name": "HELLDESK_ORG", "class_name": "HelldeskOrgDO" },
+      { "name": "AGENT_IDENTITY", "class_name": "AgentIdentityDO" },
+      { "name": "department", "class_name": "DepartmentDO" },
+      { "name": "DEPARTMENT_CONTAINER", "class_name": "DepartmentContainerDO" },
+      { "name": "AGENT", "class_name": "AgentDO" },
+    ],
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "HelldeskUserDO",
+        "AgentIdentityDO",
+        "DepartmentContainerDO",
+        "DepartmentDO",
+        "AgentDO",
+      ],
+    },
+    { "tag": "v2", "new_sqlite_classes": ["HelldeskOrgDO"] },
+  ],
+
+  "vars": {
+    "ENVIRONMENT": "production",
+    "CF_ACCESS_TEAM": "engineering-e11",
+    "CF_ACCESS_AUD": "7f6eda4c0714f6ea2afb74a3f055db65659b67571a913eab42468636a9b8c8be",
+    "KILO_API_URL": "https://api.kilo.ai",
+    "KILO_INTERNAL_API_URL": "https://api.kilo.ai",
+    "LEGACY_ADMIN_CLAIM_MODE": "honor",
+    "WORKER_ADMIN_CAPABILITY_PUBLIC_KEYS": "",
+    "HELLDESK_API_URL": "https://helldesk.kiloapps.io",
+    // LEGACY external: WASTELAND_API_URL points at the separately-deployed
+    // `wasteland` worker (https://wasteland.kiloapps.io), not HELLDESK. Not read
+    // by this repo's code; kept until that external deployment is drained.
+    "WASTELAND_API_URL": "https://wasteland.kiloapps.io",
+    "HELLDESK_BILLING_ENABLED": "true",
+    // PostHog project token (public, safe to commit) for the helldesk-access flag.
+    "NEXT_PUBLIC_POSTHOG_KEY": "phc_GK2Pxl0HPj5ZPfwhLRjXrtdz8eD7e9MKnXiFrOqnB6z",
+  },
+
+  // Hyperdrive binding for Postgres (user lookups, token generation)
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "624ec80650dd414199349f4e217ddb10",
+      "localConnectionString": "postgres://postgres:postgres@localhost:5432/postgres",
+    },
+  ],
+
+  "ai": { "binding": "AI" },
+
+  "kv_namespaces": [
+    { "binding": "AGENT_DB_SNAPSHOTS_KV", "id": "5ffb8f362e7b4d869fe2f48293a9f0c2" },
+  ],
+
+  "analytics_engine_datasets": [{ "binding": "HELLDESK_AE", "dataset": "helldesk_events" }],
+
+  "services": [
+    {
+      "binding": "GIT_TOKEN_SERVICE",
+      "service": "git-token-service",
+      "entrypoint": "GitTokenRPCEntrypoint",
+    },
+    {
+      // LEGACY EXTERNAL BINDING (not this repo's HELLDESK identity):
+      // `WASTELAND_SERVICE`/`WASTELAND_API_URL`/`WastelandRPCEntrypoint` point at a
+      // separately-deployed Cloudflare Worker still named `wasteland`
+      // (wasteland.kiloapps.io). This HELLDESK repo does NOT call it from local
+      // code; the binding is preserved for the still-live external deployment.
+      // Renaming to "helldesk" here would point Cloudflare at a service that does
+      // not exist — leave these tokens as-is until the external service is drained.
+      "binding": "WASTELAND_SERVICE",
+      "service": "wasteland",
+      "entrypoint": "WastelandRPCEntrypoint",
+    },
+    {
+      "binding": "CONTAINER_USAGE",
+      "service": "container-usage-meter",
+      "entrypoint": "ContainerUsageMeter",
+    },
+  ],
+
+  // PRODUCTION Secrets Store (shared Kilo secrets store)
+  "secrets_store_secrets": [
+    {
+      "binding": "HELLDESK_JWT_SECRET",
+      "store_id": "342a86d9e3a94da698e82d0c6e2a36f0",
+      "secret_name": "HELLDESK_JWT_SECRET_PROD",
+    },
+    {
+      "binding": "NEXTAUTH_SECRET",
+      "store_id": "342a86d9e3a94da698e82d0c6e2a36f0",
+      "secret_name": "NEXTAUTH_SECRET",
+    },
+    {
+      "binding": "INTERNAL_API_SECRET",
+      "store_id": "342a86d9e3a94da698e82d0c6e2a36f0",
+      "secret_name": "INTERNAL_API_SECRET_PROD",
+    },
+  ],
+
+  "env": {
+    "dev": {
+      "logpush": true,
+      "vars": {
+        "ENVIRONMENT": "development",
+        "CF_ACCESS_TEAM": "engineering-e11",
+        "CF_ACCESS_AUD": "7f6eda4c0714f6ea2afb74a3f055db65659b67571a913eab42468636a9b8c8be",
+        // Wrangler's workerd-network doesn't get Docker Desktop's
+        // host.docker.internal → host proxy mapping. Use the Docker
+        // Desktop VM host gateway IP directly so containers can reach
+        // the host's dev servers.
+        "KILO_API_URL": "http://192.168.65.254:3000",
+        "KILO_INTERNAL_API_URL": "http://localhost:3000",
+        "LEGACY_ADMIN_CLAIM_MODE": "honor",
+        "WORKER_ADMIN_CAPABILITY_PUBLIC_KEYS": "",
+        "HELLDESK_API_URL": "http://192.168.65.254:8803",
+        // LEGACY external dev: WASTELAND_API_URL -> the dev `wasteland` service.
+        "WASTELAND_API_URL": "http://192.168.65.254:8788",
+        "HELLDESK_BILLING_ENABLED": "true",
+        "NEXT_PUBLIC_POSTHOG_KEY": "phc_GK2Pxl0HPj5ZPfwhLRjXrtdz8eD7e9MKnXiFrOqnB6z",
+      },
+      "containers": [
+        {
+          "name": "helldesk-dev-departmentContainerDO",
+          "class_name": "DepartmentContainerDO",
+          "image": "./container/Dockerfile.dev",
+          "instance_type": "standard-4",
+          "max_instances": 50,
+        },
+      ],
+      "durable_objects": {
+        "bindings": [
+          { "name": "HELLDESK_USER", "class_name": "HelldeskUserDO" },
+          { "name": "HELLDESK_ORG", "class_name": "HelldeskOrgDO" },
+          { "name": "AGENT_IDENTITY", "class_name": "AgentIdentityDO" },
+          { "name": "department", "class_name": "DepartmentDO" },
+          { "name": "DEPARTMENT_CONTAINER", "class_name": "DepartmentContainerDO" },
+          { "name": "AGENT", "class_name": "AgentDO" },
+        ],
+      },
+      "hyperdrive": [
+        {
+          "binding": "HYPERDRIVE",
+          "id": "624ec80650dd414199349f4e217ddb10",
+          "localConnectionString": "postgres://postgres:postgres@localhost:5432/postgres",
+        },
+      ],
+      "services": [
+        {
+          "binding": "GIT_TOKEN_SERVICE",
+          "service": "git-token-service-dev",
+          "entrypoint": "GitTokenRPCEntrypoint",
+        },
+        {
+          "binding": "WASTELAND_SERVICE",
+          // LEGACY external dev binding: wasteland registers as "wasteland-dev"
+          // because its dev script uses `wrangler dev --env dev`. The prod
+          // binding (above) uses the plain "wasteland" service name. Same
+          // external-service caveat: keep until the wasteland deployment drains.
+          "service": "wasteland-dev",
+          "entrypoint": "WastelandRPCEntrypoint",
+        },
+        {
+          "binding": "CONTAINER_USAGE",
+          "service": "container-usage-meter",
+          "entrypoint": "ContainerUsageMeter",
+        },
+      ],
+      "ai": { "binding": "AI" },
+
+      "kv_namespaces": [
+        { "binding": "AGENT_DB_SNAPSHOTS_KV", "id": "5ffb8f362e7b4d869fe2f48293a9f0c2" },
+      ],
+
+      "analytics_engine_datasets": [{ "binding": "HELLDESK_AE", "dataset": "helldesk_events" }],
+      "secrets_store_secrets": [
+        {
+          "binding": "HELLDESK_JWT_SECRET",
+          "store_id": "342a86d9e3a94da698e82d0c6e2a36f0",
+          "secret_name": "HELLDESK_JWT_SECRET_PROD",
+        },
+        {
+          "binding": "NEXTAUTH_SECRET",
+          "store_id": "342a86d9e3a94da698e82d0c6e2a36f0",
+          "secret_name": "NEXTAUTH_SECRET_DEV",
+        },
+        {
+          "binding": "INTERNAL_API_SECRET",
+          "store_id": "342a86d9e3a94da698e82d0c6e2a36f0",
+          "secret_name": "INTERNAL_API_SECRET_DEV",
+        },
+      ],
+    },
+  },
+}

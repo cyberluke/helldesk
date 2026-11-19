@@ -1,0 +1,7 @@
+# Shared secret for JWT token validation (same as NextAuth.js secret)
+# @from NEXTAUTH_SECRET
+NEXTAUTH_SECRET=your-nextauth-secret-here
+
+# Secret for HELLDESK JWT signing (department access tokens, workstation tokens, etc.)
+# @from HELLDESK_JWT_SECRET
+HELLDESK_JWT_SECRET=your-helldesk-jwt-secret-here

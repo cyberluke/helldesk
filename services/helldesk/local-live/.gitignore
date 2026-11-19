@@ -1,0 +1,8 @@
+# Local HELLDESK runtime state (SQLite DBs + local storage JSON)
+data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+storage-*.json
+node_modules/

@@ -1,0 +1,18 @@
+/*
+ * Tailwind v4 entry for the federated HELLDESK UI.
+ * The verbatim original components are Tailwind utility classes, so Tailwind is
+ * required to render them 1:1. Kept separate from index.css (the local shell
+ * styles) so both coexist.
+ */
+@import "tailwindcss";
+
+/* The original UI targets a dark, non-blue HELLDESK palette. Provide the oklch
+   aliases the components reference via arbitrary values (they are already inline
+   as `bg-[color:oklch(...)]`), plus a couple of CSS variables shadcn uses. */
+:root {
+  --background: oklch(0.12 0 0);
+  --foreground: oklch(0.95 0 0 / 0.9);
+  --border: oklch(1 0 0 / 0.1);
+  --muted: oklch(0.7 0 0 / 0.6);
+  color-scheme: dark;
+}
