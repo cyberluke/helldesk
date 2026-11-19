@@ -18,7 +18,7 @@ export default function ExcellenceGovernor(){
   }catch(e){if(active)setError(e instanceof Error?e.message:'Could not read reviews');}finally{if(active)setBusy(false);}}
   void load();const timer=setInterval(load,5000);return()=>{active=false;clearInterval(timer)};
  },[departmentId]);
- return <div className="operator-console"><header className="operator-hero"><div><span className="operator-eyebrow">INDEPENDENT MACHINE REVIEW</span><h1>Build. Challenge. Refine.</h1><p>Kilo implements. The configured reviewer challenges each revision. You steer asynchronously and alone give production acceptance.</p></div><ShieldCheck size={40}/></header>
+ return <div className="operator-page operator-console"><header className="operator-hero"><div><span className="operator-eyebrow">INDEPENDENT MACHINE REVIEW</span><h1>Build. Challenge. Refine.</h1><p>Kilo implements. The configured reviewer challenges each revision. You steer asynchronously and alone give production acceptance.</p></div><ShieldCheck size={40}/></header>
   <div className="connection-status"><span className="chip">Local mission controller</span><span>{rows.length} missions in this department</span><span>{busy?<RefreshCw size={14} className="spin"/>:'Refreshes every 5 seconds'}</span></div>
   {error&&<p role="alert" className="error-banner">{error}</p>}
   {!rows.length&&!error&&<section className="connections-panel"><h2>Your review loop starts with a task.</h2><p className="muted">Choose ExcellenceGovernor in Task Studio. Implementation and review run together; no human approval inbox is inserted.</p><Link to={`/helldesk/${departmentId}/studio`}>Open Task Studio <ArrowRight size={15}/></Link></section>}
