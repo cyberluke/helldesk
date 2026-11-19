@@ -3,7 +3,7 @@
  *
  * Serves:
  *  - the full local HELLDESK control plane (reusing the federated handlers)
- *  - the NAI ExcellenceGovernor one-stop dashboard at `/`
+ *  - the unified HELLDESK desktop at `/helldesk` (`/` redirects there)
  *  - NAI Lattice token/secret fabric
  *
  * Localhost, single-user: no Cloudflare, no billing, no Sentry, no auth.
