@@ -238,30 +238,32 @@ export function TicketBoard({
                   </motion.div>
                 )}
                 {columnTickets.map(ticket => (
-                  <motion.div
+                  <div
                     key={ticket.ticket_id}
-                    layout
                     draggable={Boolean(onMoveTicket)}
-                    onDragStart={event => {
+                    onDragStart={(event: React.DragEvent<HTMLDivElement>) => {
                       if (!onMoveTicket) return;
                       event.dataTransfer.effectAllowed = 'move';
                       event.dataTransfer.setData('application/x-helldesk-ticket', ticket.ticket_id);
                     }}
-                    initial={{ opacity: 0, scale: 0.98, y: 5 }}
-                    animate={{ opacity: 1, scale: 1, y: 0 }}
-                    exit={{ opacity: 0, scale: 0.98, y: -5 }}
-                    transition={{ layout: { duration: 0.2 }, opacity: { duration: 0.14 } }}
                     className={onMoveTicket ? 'cursor-grab active:cursor-grabbing' : ''}
                   >
-                    <TicketCard
-                      ticket={ticket}
-                      onDelete={onDeleteTicket ? () => onDeleteTicket(ticket.ticket_id) : undefined}
-                      onSelect={onSelectTicket ? () => onSelectTicket(ticket) : undefined}
-                      isSelected={selectedTicketId === ticket.ticket_id}
-                      agentNameById={agentNameById}
-                      actions={renderActions?.(ticket)}
-                    />
-                  </motion.div>
+                    <motion.div
+                      layout
+                      initial={{ opacity: 0, scale: 0.98, y: 5 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      transition={{ layout: { duration: 0.2 }, opacity: { duration: 0.14 } }}
+                    >
+                      <TicketCard
+                        ticket={ticket}
+                        onDelete={onDeleteTicket ? () => onDeleteTicket(ticket.ticket_id) : undefined}
+                        onSelect={onSelectTicket ? () => onSelectTicket(ticket) : undefined}
+                        isSelected={selectedTicketId === ticket.ticket_id}
+                        agentNameById={agentNameById}
+                        actions={renderActions?.(ticket)}
+                      />
+                    </motion.div>
+                  </div>
                 ))}
               </AnimatePresence>
             </div>
