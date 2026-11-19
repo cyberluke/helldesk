@@ -65,14 +65,9 @@ export async function handleCreateTicket(c: Context<HelldeskAppEnv>, params: { w
     ...parsed.data,
     assignee_agent_ticket_id: parsed.data.assignee_agent_id,
     workstation_id: params.workstationId,
-    // These are execution policy, not presentation-only fields. Persist both
-    // controls into ticket metadata at CREATE time so Task Studio selections
-    // actually reach the reconciler / ExcellenceGovernor / reviewer pipeline.
-    metadata: {
-      ...(parsed.data.metadata ?? {}),
-      ...(parsed.data.break_room_controls ? { break_room_controls: parsed.data.break_room_controls } : {}),
-      ...(parsed.data.engine_matrix ? { engine_matrix: parsed.data.engine_matrix } : {}),
-    },
+    metadata: parsed.data.engine_matrix
+      ? { ...(parsed.data.metadata ?? {}), engine_matrix: parsed.data.engine_matrix }
+      : parsed.data.metadata,
   });
   console.log(
     `${HANDLER_LOG} handleCreateTicket: created ticket ${JSON.stringify(ticket).slice(0, 200)}`
