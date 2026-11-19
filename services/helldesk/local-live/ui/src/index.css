@@ -7,9 +7,9 @@
   --line: rgba(140, 155, 190, 0.14);
   --fg: #e8edf7;
   --muted: #8ea0bd;
-  --accent: #6ee7b7;      /* emerald frontDesk */
+  --accent: #a78bfa;      /* emerald frontDesk */
   --accent2: #5eead4;     /* teal qualityAssurance */
-  --accent3: #fbbf24;     /* amber soul */
+  --accent3: #67e8f9;     /* amber soul */
   --ok: #34d399;
   --warn: #fbbf24;
   --bad: #f87171;
@@ -20,7 +20,8 @@
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 * { box-sizing: border-box; }
-html, body, #root { margin: 0; min-height: 100vh; }
+html, body, #root { margin: 0; height: 100%; min-height: 0; }
+body { overflow: hidden; }
 body {
   font: 14px/1.55 var(--font);
   color: var(--fg);
@@ -249,3 +250,81 @@ td { padding: 9px 10px; border-bottom: 1px solid rgba(140, 155, 190, 0.07); }
 .observability .mission-list > div { transition: background .15s ease, transform .15s ease; }
 .observability .mission-list > div:hover { background: rgba(110,231,183,.05); transform: translateX(2px); }
 .observability .log > div:hover { background: rgba(110,231,183,.04); }
+
+
+/* ── Unified desktop shell ───────────────────────────────────────────────── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(167, 139, 250, .28) transparent;
+}
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(167,139,250,.48), rgba(94,234,212,.40)) padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(167,139,250,.72), rgba(94,234,212,.62)) padding-box;
+}
+
+/* Operator is a desktop pane: the document never scrolls; only the crew and
+   conversation streams do. This keeps the composer fixed like Discord/Slack. */
+.operator-console {
+  height: 100%;
+  max-width: none;
+  margin: 0;
+  padding: clamp(18px, 2vw, 36px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background:
+    radial-gradient(70% 60% at 8% -10%, rgba(167,139,250,.12), transparent 58%),
+    radial-gradient(65% 55% at 100% 8%, rgba(94,234,212,.09), transparent 60%);
+}
+.operator-console .operator-hero {
+  flex: 0 0 auto;
+  margin-bottom: clamp(16px, 1.4vw, 24px);
+}
+.operator-console .operator-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  align-items: stretch;
+}
+.operator-console .operator-crew {
+  min-height: 0;
+  overflow-y: auto;
+}
+.operator-console .operator-conversation {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.operator-console .operator-conversation-heading,
+.operator-console .operator-party-status,
+.operator-console .operator-compose,
+.operator-console .operator-steering {
+  flex: 0 0 auto;
+}
+.operator-console .operator-stream {
+  flex: 1 1 auto;
+  min-height: 150px;
+  height: auto;
+}
+.operator-console .operator-compose {
+  margin-top: 10px;
+  margin-bottom: 10px;
+}
+.operator-console .operator-steering {
+  padding-top: 14px;
+  padding-bottom: 14px;
+}
+
+@media (min-width: 2200px) {
+  .operator-console { padding: 42px 56px; }
+  .operator-console .operator-layout { grid-template-columns: 300px minmax(0, 1fr); gap: 32px; }
+  .operator-console .operator-conversation-heading { padding: 28px 34px; }
+  .operator-console .operator-stream { padding-inline: 34px; }
+  .operator-console .operator-compose { margin-inline: 30px; }
+}
