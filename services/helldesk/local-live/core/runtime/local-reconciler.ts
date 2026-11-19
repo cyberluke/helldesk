@@ -135,7 +135,7 @@ export interface LocalDispatchHooks {
     ticket: Ticket,
 ) => Promise<{
     adapter: DispatchAdapter;
-cfg: { workdir: string; repoPath: string; outputRepo?: { repoPath: string; branch?: string; bareRemote?: string; initIfMissing?: boolean }; sourceRepos?: Array<{ id: string; path: string; label?: string; branch?: string }>; branch: string; bareRemote?: string; allowCommit: boolean };
+cfg: { workdir: string; repoPath: string; outputRepo?: { repoPath: string; branch?: string; bareRemote?: string; initIfMissing?: boolean }; sourceRepos?: Array<{ id: string; path: string; label?: string; branch?: string }>; branch: string; bareRemote?: string; allowCommit: boolean; engineMatrix?: Record<string, unknown> };
     } | null>;
   /** Fan-out a ticket event to the runtime event bus (map). */
   broadcastTicket: (departmentId: string, ticketId: string | undefined, payload: Record<string, unknown>) => void;
@@ -210,7 +210,7 @@ export function createLocalApplyContext(
         });
         const binding = await (hooks.submitMission || submitMission)(sql, ticket, cfg.outputRepo ? resolve(cfg.outputRepo.repoPath) : join(cfg.workdir, 'repo'),
           `Primary read source checkout: ${join(cfg.workdir, 'repo')}. Original read-only source path: ${resolve(cfg.repoPath)} (contains current uncommitted files that git clones do not include; inspect these when required, never modify them). Extra original read-only sources: ${JSON.stringify(cfg.sourceRepos || [])}. Extra read-only source checkouts: ${join(cfg.workdir, 'sources')}. ${cfg.outputRepo ? `Implement directly in the writable output repository: ${resolve(cfg.outputRepo.repoPath)}. Never copy the whole input tree into it; federate the required capability only.` : `Single-repository mode: implement in the isolated checkout ${join(cfg.workdir, 'repo')}; original input is read-only. The resulting local commit stays in this checkout unless a remote is explicitly configured.`} Completed dependencies: ${JSON.stringify(upstream)}. Reuse their artifacts and Blueprints; do not recreate them. Do not modify original input repositories. Preserve source/output separation.`,
-          (cfg as { engine_matrix?: Record<string, unknown> }).engine_matrix);
+          cfg.engineMatrix);
         ticketOps.logTicketEvent(sql, { ticketId, agentId, eventType: 'agent_spawned', newValue: 'mission_accepted', metadata: { missionId: binding.missionId, transport: 'local-mission-controller', productionAcceptance: 'CTO_ONLY' } });
         return true;
       } catch (err) {
@@ -498,10 +498,13 @@ export async function resolveLocalDispatch(
 cfg: { workdir: string; repoPath: string; outputRepo?: { repoPath: string; branch?: string; bareRemote?: string; initIfMissing?: boolean }; sourceRepos?: Array<{ id: string; path: string; label?: string; branch?: string }>; branch: string; bareRemote?: string; allowCommit: boolean };
     } | null> {
   // Department settings are defaults for future tasks, never mutable landing targets.
+  // Engine defaults are execution policy (not repository routing), so they remain
+  // live defaults and are merged with the ticket's pinned per-task override.
+  const departmentConfig = await department.getDepartmentConfig();
   let snapshot = ticket.metadata?.local_repo_snapshot;
   if (!Object.hasOwn(ticket.metadata || {}, 'local_repo_snapshot')) {
     if (missionBinding(ticket)) throw Error('Legacy active task has no pinned repository routing; refusing to infer a landing target from changed department settings');
-    const inherited = (await department.getDepartmentConfig()).local_repo;
+    const inherited = departmentConfig.local_repo;
     const workstation = workstationId ? workstationOps.getWorkstation(department.sql, workstationId) : null;
     snapshot = inherited ? LocalRepoSchema.parse({ ...inherited, branch: inherited.branch || workstation?.default_branch || 'main' }) : null;
     ticketOps.updateTicketFields(department.sql, ticket.ticket_id, { metadata: { ...ticket.metadata, local_repo_snapshot: snapshot, local_repo_snapshot_version: 1 } }, 'dispatch-routing');
@@ -530,6 +533,7 @@ return {
       bareRemote: lr.bare_remote,
       branch,
       allowCommit: lr.allow_commit !== false,
+      engineMatrix: departmentConfig.engine_matrix,
     },
   };
 }
