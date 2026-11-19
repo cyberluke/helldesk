@@ -3,7 +3,7 @@
  *
  * Serves:
  *  - the full local HELLDESK control plane (reusing the federated handlers)
- *  - the NAI ExcellenceGovernor one-stop dashboard at `/`
+ *  - the unified HELLDESK desktop at `/helldesk` (`/` redirects there)
  *  - NAI Lattice token/secret fabric
  *
  * Localhost, single-user: no Cloudflare, no billing, no Sentry, no auth.
@@ -125,6 +125,8 @@ import { handleCreateDepartment, handleListDepartments, handleGetDepartment, han
 import { resSuccess, resError } from '../core/util/res.util';
 import { z } from 'zod';
 import { handleCreateTicket, handleListTickets, handleGetTicket, handleUpdateTicketStatus, handleCloseTicket, handleSlingTicket, handleDeleteTicket } from '../core/handlers/workstation-tickets.handler';
+import { handleListTicketEvents } from '../core/handlers/workstation-ticket-events.handler';
+import { handleAppendAgentEvent, handleGetAgentEvents } from '../core/handlers/workstation-agent-events.handler';
 import { handleRegisterAgent, handleListAgents, handleGetAgent, handleDeleteAgent, handleGetOrCreateAgent, handlePrime, handleAgentDone, handleAgentCompleted, handleWriteCheckpoint, handleCheckMemo, handleHeartbeat, handleUpdateAgentStatusMessage, handleHookTicket, handleUnhookTicket, handleAgentWaiting, handleRequestChanges, handleGetPendingNudges, handleNudge, handleNudgeDelivered } from '../core/handlers/workstation-agents.handler';
 import { handleCreateShift } from '../core/handlers/department-shifts.handler';
 import { handleGetDepartmentConfig, handleUpdateDepartmentConfig } from '../core/handlers/department-config.handler';
@@ -198,6 +200,11 @@ app.patch('/api/departments/:departmentId/workstations/:workstationId/tickets/:t
 app.post('/api/departments/:departmentId/workstations/:workstationId/tickets/:ticketId/close', (c) => handleCloseTicket(c, c.req.param()));
 app.post('/api/departments/:departmentId/workstations/:workstationId/sling', (c) => handleSlingTicket(c, c.req.param()));
 app.delete('/api/departments/:departmentId/workstations/:workstationId/tickets/:ticketId', (c) => handleDeleteTicket(c, c.req.param()));
+// Durable event APIs were implemented but never mounted in local-live. The
+// federated Observability/Drawers already call these exact contracts.
+app.get('/api/departments/:departmentId/workstations/:workstationId/events', (c) => handleListTicketEvents(c, c.req.param()));
+app.post('/api/departments/:departmentId/workstations/:workstationId/agent-events', (c) => handleAppendAgentEvent(c, c.req.param()));
+app.get('/api/departments/:departmentId/workstations/:workstationId/agents/:agentId/events', (c) => handleGetAgentEvents(c, c.req.param()));
 
 // agents
 app.post('/api/departments/:departmentId/workstations/:workstationId/agents', (c) => handleRegisterAgent(c, c.req.param()));
@@ -219,8 +226,48 @@ app.post('/api/departments/:departmentId/workstations/:workstationId/agents/:age
 app.post('/api/departments/:departmentId/workstations/:workstationId/agents/:agentId/nudges/:nudgeId/delivered', (c) => handleNudgeDelivered(c, c.req.param()));
 app.post('/api/departments/:departmentId/workstations/:workstationId/agents/:agentId/request-changes', (c) => handleRequestChanges(c, c.req.param()));
 
-// memo
+// memo — durable agent mailbox. Memos are message tickets, so expose the
+// department-level CRUD surface the desktop UI needs in addition to the legacy
+// workstation send endpoint used by agents.
 app.post('/api/departments/:departmentId/workstations/:workstationId/memo', (c) => handleSendMemo(c, c.req.param()));
+app.get('/api/departments/:departmentId/memos', async (c) => {
+  const department = runtime.getDepartment(c.req.param('departmentId'));
+  const memos = (await department.listTickets({ type: 'message' })).filter(ticket => ticket.type === 'message');
+  return c.json(resSuccess(memos));
+});
+app.post('/api/departments/:departmentId/memos', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = z.object({
+    to_agent_id: z.string().min(1),
+    subject: z.string().min(1),
+    body: z.string().min(1),
+    from_agent_id: z.string().min(1).default('operator'),
+  }).safeParse(body);
+  if (!parsed.success) return c.json(resError('to_agent_id, subject and body are required'), 400);
+  const department = runtime.getDepartment(c.req.param('departmentId'));
+  await department.sendMemo(parsed.data);
+  return c.json(resSuccess({ sent: true }), 201);
+});
+app.patch('/api/departments/:departmentId/memos/:memoId', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = z.object({ subject: z.string().min(1).optional(), body: z.string().min(1).optional() }).refine(v => v.subject !== undefined || v.body !== undefined).safeParse(body);
+  if (!parsed.success) return c.json(resError('subject or body is required'), 400);
+  const department = runtime.getDepartment(c.req.param('departmentId'));
+  const current = await department.getTicketAsync(c.req.param('memoId'));
+  if (!current || current.type !== 'message') return c.json(resError('Memo not found'), 404);
+  const updated = await department.updateTicket(c.req.param('memoId'), {
+    ...(parsed.data.subject ? { title: parsed.data.subject } : {}),
+    ...(parsed.data.body ? { body: parsed.data.body } : {}),
+  });
+  return c.json(resSuccess(updated));
+});
+app.delete('/api/departments/:departmentId/memos/:memoId', async (c) => {
+  const department = runtime.getDepartment(c.req.param('departmentId'));
+  const current = await department.getTicketAsync(c.req.param('memoId'));
+  if (!current || current.type !== 'message') return c.json(resError('Memo not found'), 404);
+  await department.deleteTicket(c.req.param('memoId'));
+  return c.json(resSuccess({ deleted: true }));
+});
 
 // review queue
 app.post('/api/departments/:departmentId/workstations/:workstationId/review-queue', (c) => handleSubmitToReviewQueue(c, c.req.param()));
@@ -584,9 +631,12 @@ app.post('/api/system/restart', async (c) => {
 });
 
 // ---------------------------------------------------------------- dashboard
-import { dashboardHtml, globalShellHtml } from './dashboard';
-app.get('/', async (c) => c.html(globalShellHtml()));
-app.get('/department', async (c) => c.html(dashboardHtml()));
+import { dashboardHtml } from './dashboard';
+// HELLDESK React is the product surface. The old standalone Department HTML is
+// retained only as an explicit legacy diagnostic route, never as a competing app.
+app.get('/', (c) => c.redirect('/helldesk/#/helldesk/default'));
+app.get('/department', (c) => c.redirect('/helldesk/#/helldesk/default'));
+app.get('/legacy/department', async (c) => c.html(dashboardHtml()));
 app.get('/health', (c) => c.json({ ok: true }));
 
 // ---------------------------------------------------------------- NAI-Lattice engine proxy

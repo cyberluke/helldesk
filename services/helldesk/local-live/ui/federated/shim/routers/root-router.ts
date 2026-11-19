@@ -70,7 +70,9 @@ export type RootRouter = {
     createTicket: { input: { departmentId?: string; workstationId: string; type: string; title: string }; output: Ticket };
     sling: { input: { departmentId?: string; workstationId: string; title: string; body?: string }; output: { ticket: Ticket; agent: Agent } };
     deleteTicket: { input: { departmentId?: string; workstationId: string; ticketId: string }; output: void };
+    updateTicketStatus: { input: { departmentId?: string; workstationId: string; ticketId: string; status: string }; output: Ticket };
     listAgents: { input: { workstationId: string; departmentId?: string }; output: Agent[] };
+    createAgent: { input: { departmentId?: string; workstationId: string; role: string; name: string; identity: string }; output: Agent };
     deleteAgent: { input: { departmentId?: string; workstationId: string; agentId: string }; output: void };
     getDepartmentEvents: { input: { departmentId: string; limit?: number }; output: DepartmentEvent[] };
     getTicketEvents: { input: { departmentId?: string; workstationId: string; ticketId?: string }; output: TicketEvent[] };

@@ -1,5 +1,6 @@
 'use client';
 
+import type { DragEvent, KeyboardEvent, ReactNode } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -8,44 +9,51 @@ import { Trash2 } from '@/lib/icons';
 import { formatDistanceToNow } from 'date-fns';
 import { motion, AnimatePresence } from 'motion/react';
 
-type Ticket = {
+export type KanbanTicket = {
   ticket_id: string;
   type: string;
   status: string;
   title: string;
   body: string | null;
+  workstation_id?: string | null;
   assignee_agent_ticket_id: string | null;
   priority: string;
   labels: string[];
   created_at: string;
-  closed_at: string | null;
 };
 
 type TicketBoardProps = {
-  tickets: Ticket[];
+  tickets: KanbanTicket[];
   isLoading: boolean;
   onDeleteTicket?: (ticketId: string) => void;
-  onSelectTicket?: (ticket: Ticket) => void;
+  onSelectTicket?: (ticket: KanbanTicket) => void;
+  onMoveTicket?: (ticket: KanbanTicket, status: string) => void;
   selectedTicketId?: string | null;
   agentNameById?: Record<string, string>;
+  renderActions?: (ticket: KanbanTicket) => ReactNode;
+  emptyLabel?: string;
 };
 
-const statusColumns = ['open', 'in_progress', 'closed'] as const;
+const statusColumns = ['open', 'in_progress', 'in_review', 'closed', 'failed'] as const;
 
-const statusLabels: Record<string, string> = {
+const statusLabels: Record<(typeof statusColumns)[number], string> = {
   open: 'Open',
-  in_progress: 'In Progress',
+  in_progress: 'In progress',
+  in_review: 'In review',
   closed: 'Closed',
+  failed: 'Failed',
 };
 
-const statusColors: Record<string, string> = {
-  open: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
-  in_progress: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
-  closed: 'bg-green-500/10 text-green-400 border-green-500/20',
+const statusColors: Record<(typeof statusColumns)[number], string> = {
+  open: 'border-cyan-400/25 bg-cyan-400/[0.07] text-cyan-200',
+  in_progress: 'border-violet-400/25 bg-violet-400/[0.08] text-violet-200',
+  in_review: 'border-fuchsia-300/25 bg-fuchsia-300/[0.07] text-fuchsia-100',
+  closed: 'border-emerald-300/25 bg-emerald-300/[0.07] text-emerald-200',
+  failed: 'border-red-300/25 bg-red-300/[0.07] text-red-200',
 };
 
 const priorityColors: Record<string, string> = {
-  low: 'text-white/55',
+  low: 'text-white/40',
   medium: 'text-sky-300',
   high: 'text-amber-300',
   critical: 'text-red-300',
@@ -57,18 +65,20 @@ function TicketCard({
   onSelect,
   isSelected,
   agentNameById,
+  actions,
 }: {
-  ticket: Ticket;
+  ticket: KanbanTicket;
   onDelete?: () => void;
   onSelect?: () => void;
   isSelected?: boolean;
   agentNameById?: Record<string, string>;
+  actions?: ReactNode;
 }) {
   const assigneeName = ticket.assignee_agent_ticket_id
     ? agentNameById?.[ticket.assignee_agent_ticket_id]
     : null;
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+  const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (!onSelect) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
@@ -79,11 +89,9 @@ function TicketCard({
   return (
     <Card
       className={cn(
-        'group border-white/10 bg-white/[0.03] transition-[border-color,background-color,transform] hover:bg-white/[0.05]',
+        'group overflow-hidden border-white/[0.08] bg-[linear-gradient(145deg,rgba(20,25,36,.94),rgba(10,13,20,.98))] shadow-[0_16px_42px_rgba(0,0,0,.22)] transition-[border-color,background-color,transform,box-shadow] hover:-translate-y-px hover:border-violet-300/20 hover:shadow-[0_18px_48px_rgba(0,0,0,.34)]',
         onSelect ? 'cursor-pointer' : 'cursor-default',
-        isSelected
-          ? 'border-[color:oklch(95%_0.15_108_/_0.45)] bg-[color:oklch(95%_0.15_108_/_0.06)]'
-          : ''
+        isSelected ? 'border-teal-300/35 ring-1 ring-teal-300/15' : ''
       )}
     >
       <div
@@ -91,29 +99,26 @@ function TicketCard({
         tabIndex={onSelect ? 0 : undefined}
         onClick={onSelect}
         onKeyDown={handleKeyDown}
-        className={cn(
-          'w-full text-left',
-          onSelect
-            ? 'focus-visible:ring-2 focus-visible:ring-[color:oklch(95%_0.15_108_/_0.35)]'
-            : '',
-          'focus-visible:ring-offset-0 focus-visible:outline-none'
-        )}
+        className="w-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-300/30"
       >
-        <CardContent className="p-3">
-          <div className="mb-2 flex items-start justify-between gap-2">
-            <h4 className="line-clamp-2 text-sm font-medium text-white/90">{ticket.title}</h4>
-            <div className="flex shrink-0 items-center gap-1">
-              <span className={cn('text-xs font-medium', priorityColors[ticket.priority])}>
+        <CardContent className="p-3.5">
+          <div className="mb-2 flex items-start justify-between gap-3">
+            <h4 className="line-clamp-2 text-[13px] font-semibold leading-[1.35] tracking-[-0.015em] text-white/90">
+              {ticket.title}
+            </h4>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <span className={cn('text-[10px] font-semibold uppercase tracking-[.08em]', priorityColors[ticket.priority] ?? 'text-white/35')}>
                 {ticket.priority}
               </span>
               {onDelete && (
                 <button
                   type="button"
+                  aria-label="Delete ticket"
                   onClick={e => {
                     e.stopPropagation();
                     onDelete();
                   }}
-                  className="rounded p-0.5 text-white/40 transition-colors hover:bg-red-500/10 hover:text-red-300"
+                  className="rounded-md p-1 text-white/25 transition-colors hover:bg-red-400/10 hover:text-red-200"
                 >
                   <Trash2 className="size-3" />
                 </button>
@@ -121,29 +126,33 @@ function TicketCard({
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="text-xs">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge variant="outline" className="border-white/[0.08] bg-white/[0.025] text-[9px] text-white/45">
               {ticket.type}
             </Badge>
-            <span className="text-xs text-white/50">
+            <span className="font-mono text-[9px] text-white/25">{ticket.ticket_id.slice(0, 8)}</span>
+            <span className="text-[9px] text-white/25">
               {formatDistanceToNow(new Date(ticket.created_at), { addSuffix: true })}
             </span>
-            {assigneeName && (
-              <span className="text-xs text-white/50">
-                <span className="text-white/30">assigned</span> {assigneeName}
-              </span>
-            )}
           </div>
+
+          {assigneeName && (
+            <div className="mt-2 text-[10px] text-white/35">
+              <span className="text-white/20">agent</span> {assigneeName}
+            </div>
+          )}
 
           {ticket.labels.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1">
-              {ticket.labels.map(label => (
-                <Badge key={label} variant="secondary" className="text-xs">
+              {ticket.labels.slice(0, 4).map(label => (
+                <Badge key={label} variant="secondary" className="bg-white/[0.035] text-[9px] text-white/35">
                   {label}
                 </Badge>
               ))}
             </div>
           )}
+
+          {actions && <div className="mt-3 border-t border-white/[0.05] pt-2">{actions}</div>}
         </CardContent>
       </div>
     </Card>
@@ -155,18 +164,21 @@ export function TicketBoard({
   isLoading,
   onDeleteTicket,
   onSelectTicket,
+  onMoveTicket,
   selectedTicketId,
   agentNameById,
+  renderActions,
+  emptyLabel = 'No tickets',
 }: TicketBoardProps) {
   if (isLoading) {
     return (
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid min-w-[1120px] grid-cols-5 gap-3">
         {statusColumns.map(status => (
           <div key={status}>
             <Skeleton className="mb-3 h-6 w-24" />
             <div className="space-y-2">
-              <Skeleton className="h-20 w-full rounded-lg" />
-              <Skeleton className="h-20 w-full rounded-lg" />
+              <Skeleton className="h-24 w-full rounded-xl" />
+              <Skeleton className="h-24 w-full rounded-xl" />
             </div>
           </div>
         ))}
@@ -174,31 +186,40 @@ export function TicketBoard({
     );
   }
 
+  const ticketById = new Map(tickets.map(ticket => [ticket.ticket_id, ticket]));
+
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+    <div className="min-w-[1120px] grid-cols-5 gap-3 lg:grid">
       {statusColumns.map((status, colIdx) => {
-        const columnTickets = tickets.filter(b => b.status === status && b.type !== 'agent');
+        const columnTickets = tickets.filter(ticket => ticket.status === status && ticket.type !== 'agent' && ticket.type !== 'message');
         return (
-          <motion.div
+          <motion.section
             key={status}
-            initial={{ opacity: 0, y: 12 }}
+            initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: colIdx * 0.08, duration: 0.3 }}
+            transition={{ delay: colIdx * 0.035, duration: 0.22 }}
+            onDragOver={event => {
+              if (!onMoveTicket) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = 'move';
+            }}
+            onDrop={event => {
+              if (!onMoveTicket) return;
+              event.preventDefault();
+              const ticket = ticketById.get(event.dataTransfer.getData('application/x-helldesk-ticket'));
+              if (ticket && ticket.status !== status) onMoveTicket(ticket, status);
+            }}
+            className="min-h-[260px] rounded-2xl border border-white/[0.055] bg-white/[0.015] p-2.5"
           >
-            <div className="mb-3 flex items-center gap-2">
-              <span
-                className={cn(
-                  'rounded-md border px-2 py-0.5 text-xs font-medium',
-                  statusColors[status]
-                )}
-              >
+            <div className="mb-2.5 flex items-center justify-between gap-2 px-1">
+              <span className={cn('rounded-lg border px-2 py-1 text-[10px] font-semibold uppercase tracking-[.08em]', statusColors[status])}>
                 {statusLabels[status]}
               </span>
               <motion.span
                 key={columnTickets.length}
-                initial={{ scale: 1.3, opacity: 0.5 }}
+                initial={{ scale: 1.2, opacity: 0.5 }}
                 animate={{ scale: 1, opacity: 1 }}
-                className="text-xs text-white/45"
+                className="font-mono text-[10px] text-white/30"
               >
                 {columnTickets.length}
               </motion.span>
@@ -206,41 +227,47 @@ export function TicketBoard({
             <div className="space-y-2">
               <AnimatePresence mode="popLayout" initial={false}>
                 {columnTickets.length === 0 && (
-                  <motion.p
+                  <motion.div
                     key="empty"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
-                    className="py-4 text-center text-xs text-white/35"
+                    className="rounded-xl border border-dashed border-white/[0.05] px-3 py-8 text-center text-[10px] text-white/20"
                   >
-                    No tickets
-                  </motion.p>
+                    {emptyLabel}
+                  </motion.div>
                 )}
                 {columnTickets.map(ticket => (
-                  <motion.div
+                  <div
                     key={ticket.ticket_id}
-                    layout
-                    initial={{ opacity: 0, scale: 0.95, y: 10 }}
-                    animate={{ opacity: 1, scale: 1, y: 0 }}
-                    exit={{ opacity: 0, scale: 0.95, y: -10 }}
-                    transition={{
-                      layout: { duration: 0.3, ease: [0.25, 0.1, 0.25, 1] },
-                      opacity: { duration: 0.2 },
-                      scale: { duration: 0.2 },
+                    draggable={Boolean(onMoveTicket)}
+                    onDragStart={(event: DragEvent<HTMLDivElement>) => {
+                      if (!onMoveTicket) return;
+                      event.dataTransfer.effectAllowed = 'move';
+                      event.dataTransfer.setData('application/x-helldesk-ticket', ticket.ticket_id);
                     }}
+                    className={onMoveTicket ? 'cursor-grab active:cursor-grabbing' : ''}
                   >
-                    <TicketCard
-                      ticket={ticket}
-                      onDelete={onDeleteTicket ? () => onDeleteTicket(ticket.ticket_id) : undefined}
-                      onSelect={onSelectTicket ? () => onSelectTicket(ticket) : undefined}
-                      isSelected={selectedTicketId === ticket.ticket_id}
-                      agentNameById={agentNameById}
-                    />
-                  </motion.div>
+                    <motion.div
+                      layout
+                      initial={{ opacity: 0, scale: 0.98, y: 5 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      transition={{ layout: { duration: 0.2 }, opacity: { duration: 0.14 } }}
+                    >
+                      <TicketCard
+                        ticket={ticket}
+                        onDelete={onDeleteTicket ? () => onDeleteTicket(ticket.ticket_id) : undefined}
+                        onSelect={onSelectTicket ? () => onSelectTicket(ticket) : undefined}
+                        isSelected={selectedTicketId === ticket.ticket_id}
+                        agentNameById={agentNameById}
+                        actions={renderActions?.(ticket)}
+                      />
+                    </motion.div>
+                  </div>
                 ))}
               </AnimatePresence>
             </div>
-          </motion.div>
+          </motion.section>
         );
       })}
     </div>
