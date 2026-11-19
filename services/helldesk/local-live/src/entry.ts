@@ -226,8 +226,47 @@ app.post('/api/departments/:departmentId/workstations/:workstationId/agents/:age
 app.post('/api/departments/:departmentId/workstations/:workstationId/agents/:agentId/nudges/:nudgeId/delivered', (c) => handleNudgeDelivered(c, c.req.param()));
 app.post('/api/departments/:departmentId/workstations/:workstationId/agents/:agentId/request-changes', (c) => handleRequestChanges(c, c.req.param()));
 
-// memo
+// memo — durable agent mailbox. Memos are message tickets, so expose the
+// department-level CRUD surface the desktop UI needs in addition to the legacy
+// workstation send endpoint used by agents.
 app.post('/api/departments/:departmentId/workstations/:workstationId/memo', (c) => handleSendMemo(c, c.req.param()));
+app.get('/api/departments/:departmentId/memos', async (c) => {
+  const department = runtime.getDepartment(c.req.param('departmentId'));
+  return c.json(resSuccess(await department.listTickets({ type: 'message' })));
+});
+app.post('/api/departments/:departmentId/memos', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = z.object({
+    to_agent_id: z.string().min(1),
+    subject: z.string().min(1),
+    body: z.string().min(1),
+    from_agent_id: z.string().min(1).default('operator'),
+  }).safeParse(body);
+  if (!parsed.success) return c.json(resError('to_agent_id, subject and body are required'), 400);
+  const department = runtime.getDepartment(c.req.param('departmentId'));
+  await department.sendMemo(parsed.data);
+  return c.json(resSuccess({ sent: true }), 201);
+});
+app.patch('/api/departments/:departmentId/memos/:memoId', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = z.object({ subject: z.string().min(1).optional(), body: z.string().min(1).optional() }).refine(v => v.subject !== undefined || v.body !== undefined).safeParse(body);
+  if (!parsed.success) return c.json(resError('subject or body is required'), 400);
+  const department = runtime.getDepartment(c.req.param('departmentId'));
+  const current = await department.getTicketAsync(c.req.param('memoId'));
+  if (!current || current.type !== 'message') return c.json(resError('Memo not found'), 404);
+  const updated = await department.updateTicket(c.req.param('memoId'), {
+    ...(parsed.data.subject ? { title: parsed.data.subject } : {}),
+    ...(parsed.data.body ? { body: parsed.data.body } : {}),
+  });
+  return c.json(resSuccess(updated));
+});
+app.delete('/api/departments/:departmentId/memos/:memoId', async (c) => {
+  const department = runtime.getDepartment(c.req.param('departmentId'));
+  const current = await department.getTicketAsync(c.req.param('memoId'));
+  if (!current || current.type !== 'message') return c.json(resError('Memo not found'), 404);
+  await department.deleteTicket(c.req.param('memoId'));
+  return c.json(resSuccess({ deleted: true }));
+});
 
 // review queue
 app.post('/api/departments/:departmentId/workstations/:workstationId/review-queue', (c) => handleSubmitToReviewQueue(c, c.req.param()));
