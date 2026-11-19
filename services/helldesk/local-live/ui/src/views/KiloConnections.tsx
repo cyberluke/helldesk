@@ -4,7 +4,7 @@ import {RefreshCw, Network, Layers, ShieldCheck} from '@/lib/icons';
 const Snapshot = z.object({
  scannedAt:z.string(), revision:z.string(), status:z.string(), retainedLastGood:z.boolean(),
  model:z.string().nullable().optional(), defaultAgent:z.string().nullable().optional(), providerNames:z.array(z.string()),
- plugins:z.array(z.object({id:z.string(),source:z.string(),location:z.string().optional(),available:z.boolean().optional(),sha256:z.string().optional()})),
+ plugins:z.array(z.object({id:z.string(),source:z.string(),location:z.string().optional(),available:z.boolean().optional(),loadedOnNewSession:z.boolean().optional(),sha256:z.string().optional()})),
  mcp:z.array(z.object({name:z.string(),type:z.string(),enabled:z.boolean()})),
  errors:z.array(z.object({path:z.string(),code:z.string(),message:z.string()})),
  application:z.object({mode:z.string(),runningSessions:z.string(),message:z.string()})
@@ -25,10 +25,10 @@ export default function KiloConnections(){
    <button className="primary" disabled={busy} onClick={()=>void load(true)}><RefreshCw size={16} className={busy?'spin':''}/>{busy?'Reading configuration…':'Reload connections'}</button></header>
   {error&&<p role="alert" className="error-banner">{error}</p>}
   {data&&<>
-   <div className="connection-metrics"><div><ShieldCheck/><span>Default model<strong>{data.model||'Not configured'}</strong></span></div><div><Network/><span>MCP declarations<strong>{data.mcp.filter(m=>m.enabled).length} enabled / {data.mcp.length} total</strong></span></div><div><Layers/><span>Plugin sources<strong>{data.plugins.length} discovered</strong></span></div></div>
+   <div className="connection-metrics"><div><ShieldCheck/><span>Default model<strong>{data.model||'Not configured'}</strong></span></div><div><Network/><span>MCP declarations<strong>{data.mcp.filter(m=>m.enabled).length} enabled / {data.mcp.length} total</strong></span></div><div><Layers/><span>Plugin sources<strong>{data.plugins.filter(p=>p.loadedOnNewSession).length} enforced / {data.plugins.length} discovered</strong></span></div></div>
    <div className="connection-status" role="status"><span className={'chip '+(data.status==='ready'?'ok':'warn')}>{data.status}{data.retainedLastGood?' · last good snapshot':''}</span><span>{data.application.message}</span><time dateTime={data.scannedAt}>{new Date(data.scannedAt).toLocaleTimeString()}</time></div>
    <div className="connection-lists"><div><h3>MCP servers</h3><p className="muted">Declared configuration; this scan does not start or health-check servers.</p>{data.mcp.map(m=><div className="connection-row" key={m.name}><Network size={16}/><strong>{m.name}</strong><span>{m.type}</span><span className="chip">{m.enabled?'enabled':'disabled'}</span></div>)}{!data.mcp.length&&<p className="muted">No MCP entries found.</p>}</div>
-   <div><h3>Plugins</h3><p className="muted">Executable plugins load in new Kilo sessions. Running work stays uninterrupted.</p>{data.plugins.map((p,i)=><div className="connection-row" key={p.id+String(i)}><Layers size={16}/><div><strong>{p.id}</strong><small className="mono">{p.source}</small></div><span className="chip">{p.available===false?'missing':'discovered'}</span></div>)}{!data.plugins.length&&<p className="muted">No plugin entries found.</p>}</div></div>
+   <div><h3>Plugins</h3><p className="muted">Top-level home/config plugins marked enforced are injected into every new writable Kilo SDK session; nested support modules stay import-only.</p>{data.plugins.map((p,i)=><div className="connection-row" key={p.id+String(i)}><Layers size={16}/><div><strong>{p.id}</strong><small className="mono">{p.source}</small></div><span className={'chip '+(p.available===false?'bad':p.loadedOnNewSession?'ok':'')}>{p.available===false?'missing':p.loadedOnNewSession?'enforced':'support module'}</span></div>)}{!data.plugins.length&&<p className="muted">No plugin entries found.</p>}</div></div>
    {data.errors.map((e,i)=><p className="error-banner" key={i}>{e.code}: {e.message} <span className="mono">{e.path}</span></p>)}
   </>}
  </section>
