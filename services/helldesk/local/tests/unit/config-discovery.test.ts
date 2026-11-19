@@ -11,7 +11,7 @@ test('JSONC parser preserves comment-like strings and strips commented trailing 
   expect(deepMerge({}, JSON.parse('{"__proto__":{"polluted":true},"model":"p/m"}'))).toEqual({model:'p/m'});
 });
 
-test('discovery inventories both directory spellings without reinjecting plugins, redacts credentials, retains last good', () => {
+test('discovery enforces top-level home plugins while keeping nested support modules passive, redacts credentials, retains last good', () => {
   const oldHome = process.env.USERPROFILE, oldDir = process.env.KILO_CONFIG_DIR;
   const home = mkdtempSync(join(tmpdir(), 'helldesk-discovery-'));
   const config = join(home, '.config', 'kilo');
@@ -28,12 +28,13 @@ test('discovery inventories both directory spellings without reinjecting plugins
     expect(first.status).toBe('ready');
     expect(first.model).toBe('second/model');
     expect(first.plugins.length).toBe(3);
-    expect(first.plugins.filter(p=>p.loadedOnNewSession).length).toBe(1);
+    expect(first.plugins.filter(p=>p.loadedOnNewSession).length).toBe(2);
     expect(first.mcp).toEqual([{name:'lattice',type:'local',enabled:true}]);
     expect(JSON.stringify(first)).not.toContain('do-not-disclose');
     expect(JSON.stringify(first)).not.toContain('secret-argument');
-    expect(writableKiloConfiguration().plugin?.length).toBe(1);
-    expect(writableKiloConfiguration().plugin?.some(p=>p.includes('one.ts'))).toBe(false);
+    expect(writableKiloConfiguration().plugin?.length).toBe(2);
+    expect(writableKiloConfiguration().plugin?.some(p=>p.includes('one.ts'))).toBe(true);
+    expect(writableKiloConfiguration().plugin?.some(p=>p.includes('helper.ts'))).toBe(false);
     writeFileSync(join(config, 'kilo.jsonc'), '{ "apiKey": "sensitive-malformed-value",');
     const bad = reloadKiloDiscovery();
     expect(bad.status).toBe('degraded');
