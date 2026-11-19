@@ -1,6 +1,6 @@
 'use client';
 
-import type { ReactNode } from 'react';
+import type { DragEvent, KeyboardEvent, ReactNode } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -78,7 +78,7 @@ function TicketCard({
     ? agentNameById?.[ticket.assignee_agent_ticket_id]
     : null;
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+  const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (!onSelect) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
@@ -241,7 +241,7 @@ export function TicketBoard({
                   <div
                     key={ticket.ticket_id}
                     draggable={Boolean(onMoveTicket)}
-                    onDragStart={(event: React.DragEvent<HTMLDivElement>) => {
+                    onDragStart={(event: DragEvent<HTMLDivElement>) => {
                       if (!onMoveTicket) return;
                       event.dataTransfer.effectAllowed = 'move';
                       event.dataTransfer.setData('application/x-helldesk-ticket', ticket.ticket_id);
