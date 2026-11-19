@@ -72,11 +72,13 @@ export function reloadKiloDiscovery(extraDirs: string[] = []): KiloDiscovery {
         const file = join(folder, entry.name);
         if (lstatSync(file).isSymbolicLink()) continue;
         if (entry.isDirectory()) { walk(file, depth + 1); continue; }
-        // Nested files are discoverable support modules, not implicitly plugin
-        // entrypoints. They execute only if imported by an entrypoint/configured.
-        // Directory discovery is metadata only. Kilo owns native directory
-        // loading; injecting these again can initialize hooks twice.
-        if (/\.(?:[cm]?js|ts)$/.test(extname(file)) && !/\.(?:test|spec)\.[^.]+$/.test(file) && !file.endsWith('.d.ts')) addFile(file, 'directory', false);
+        // Match Kilo's native ConfigPlugin.load exactly: immediate children of
+        // {plugin,plugins} are executable entrypoints. We ALSO inject those file
+        // URLs into KILO_CONFIG_CONTENT for writable SDK sessions, making the
+        // mutation runtime deterministic even when its HOME/XDG config root differs
+        // from the interactive VSIX process. Nested files remain metadata/support
+        // modules and execute only when imported by an entrypoint.
+        if (/\.(?:[cm]?js|ts)$/.test(extname(file)) && !/\.(?:test|spec)\.[^.]+$/.test(file) && !file.endsWith('.d.ts')) addFile(file, 'directory', depth === 0);
       }
     };
     try { walk(directory, 0); } catch { errors.push({ path: directory, code: 'PLUGIN_SCAN_FAILED', message: 'Cannot enumerate plugin directory' }); }
