@@ -125,6 +125,8 @@ import { handleCreateDepartment, handleListDepartments, handleGetDepartment, han
 import { resSuccess, resError } from '../core/util/res.util';
 import { z } from 'zod';
 import { handleCreateTicket, handleListTickets, handleGetTicket, handleUpdateTicketStatus, handleCloseTicket, handleSlingTicket, handleDeleteTicket } from '../core/handlers/workstation-tickets.handler';
+import { handleListTicketEvents } from '../core/handlers/workstation-ticket-events.handler';
+import { handleAppendAgentEvent, handleGetAgentEvents } from '../core/handlers/workstation-agent-events.handler';
 import { handleRegisterAgent, handleListAgents, handleGetAgent, handleDeleteAgent, handleGetOrCreateAgent, handlePrime, handleAgentDone, handleAgentCompleted, handleWriteCheckpoint, handleCheckMemo, handleHeartbeat, handleUpdateAgentStatusMessage, handleHookTicket, handleUnhookTicket, handleAgentWaiting, handleRequestChanges, handleGetPendingNudges, handleNudge, handleNudgeDelivered } from '../core/handlers/workstation-agents.handler';
 import { handleCreateShift } from '../core/handlers/department-shifts.handler';
 import { handleGetDepartmentConfig, handleUpdateDepartmentConfig } from '../core/handlers/department-config.handler';
@@ -198,6 +200,11 @@ app.patch('/api/departments/:departmentId/workstations/:workstationId/tickets/:t
 app.post('/api/departments/:departmentId/workstations/:workstationId/tickets/:ticketId/close', (c) => handleCloseTicket(c, c.req.param()));
 app.post('/api/departments/:departmentId/workstations/:workstationId/sling', (c) => handleSlingTicket(c, c.req.param()));
 app.delete('/api/departments/:departmentId/workstations/:workstationId/tickets/:ticketId', (c) => handleDeleteTicket(c, c.req.param()));
+// Durable event APIs were implemented but never mounted in local-live. The
+// federated Observability/Drawers already call these exact contracts.
+app.get('/api/departments/:departmentId/workstations/:workstationId/events', (c) => handleListTicketEvents(c, c.req.param()));
+app.post('/api/departments/:departmentId/workstations/:workstationId/agent-events', (c) => handleAppendAgentEvent(c, c.req.param()));
+app.get('/api/departments/:departmentId/workstations/:workstationId/agents/:agentId/events', (c) => handleGetAgentEvents(c, c.req.param()));
 
 // agents
 app.post('/api/departments/:departmentId/workstations/:workstationId/agents', (c) => handleRegisterAgent(c, c.req.param()));
