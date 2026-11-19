@@ -66,12 +66,12 @@ export default function TaskStudio() {
   // ── task panel ──
   const [title, setTitle] = useState('')
   const [spec, setSpec] = useState('')
-  const [enforcer, setEnforcer] = useState<Enforcer>('excellenceGovernor')
+  const [enforcer, setEnforcer] = useState<Enforcer>('auto')
   const [workstationId, setWorkstationId] = useState('')
   const [dependsOn, setDependsOn] = useState<string[]>([])
   const [tasks, setTasks] = useState<RoomState['tickets']>([])
   const [dependencyError, setDependencyError] = useState('')
-  const [reviewMode, setReviewMode] = useState<'ReviewThenLand' | 'ReviewAndMerge'>('ReviewThenLand')
+  const [reviewMode, setReviewMode] = useState<'inherit' | 'ReviewThenLand' | 'ReviewAndMerge'>('inherit')
   const [engineOvers, setEngineOvers] = useState<{ engine: string; providerID?: string; modelID?: string; baseURL?: string }>({ engine: '' })
   const [taskBusy, setTaskBusy] = useState(false)
   const [taskMsg, setTaskMsg] = useState<{ ok: boolean; text: string } | null>(null)
@@ -152,7 +152,7 @@ export default function TaskStudio() {
       title: title.trim() || 'Untitled task',
       spec: spec.trim(),
       enforcer,
-      review_mode: reviewMode,
+      review_mode: reviewMode === 'inherit' ? undefined : reviewMode,
       depends_on: dependsOn,
       engineMatrix: engineOvers.engine ? { mutation: engineOvers } : undefined,
     })
@@ -336,6 +336,8 @@ export default function TaskStudio() {
           {enforcer !== 'soul' && (
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <label className="ts-label" style={{ margin: 0 }}>Review mode</label>
+              <button className={'ts-mode' + (reviewMode === 'inherit' ? ' on' : '')}
+                onClick={() => setReviewMode('inherit')}>Department default</button>
               <button className={'ts-mode' + (reviewMode === 'ReviewThenLand' ? ' on' : '')}
                 onClick={() => setReviewMode('ReviewThenLand')}>Review then land</button>
               <button className={'ts-mode' + (reviewMode === 'ReviewAndMerge' ? ' on' : '')}
