@@ -327,6 +327,9 @@ export class KiloMutationRunner implements MutationRunner {
       };
       commands.push('kilo.createKilo');
       const client = created.client as unknown as {
+        mcp: {
+          status(options: { query: { directory: string } }): Promise<{ data?: Record<string, { status?: string }> }>;
+        };
         session: {
           create(options: { query: { directory: string } }): Promise<{ data?: { id?: string } }>;
           prompt(options: {
@@ -342,6 +345,19 @@ export class KiloMutationRunner implements MutationRunner {
           abort(options: { path: { id: string } }): Promise<unknown>;
         };
       };
+      // Match the VSIX Agent Manager startup contract: touching MCP status for
+      // this exact directory eagerly initializes the configured MCP set before
+      // the first prompt. Without this, headless sessions can race first-turn
+      // tool discovery and look "stuck" while the editor path works.
+      try {
+        const mcp = await client.mcp.status({ query: { directory: request.workspacePath } });
+        const states = Object.entries(mcp.data ?? {}).map(([name, value]) => `${name}:${value?.status ?? 'unknown'}`);
+        commands.push(`kilo.mcp.status[${states.join(',')}]`);
+      } catch (mcpErr) {
+        const mm = mcpErr instanceof Error ? mcpErr.message : String(mcpErr);
+        return { outcome: 'FAILED_TRANSIENT', changedFiles: [], commandsExecuted: [...commands, 'kilo.mcp.status'], artifactsProduced: [], workspaceFingerprintBefore: before, workspaceFingerprintAfter: before, error: `kilo-mcp-warmup-failed: ${mm}` };
+      }
+
       const createdSession = await client.session.create({ query: { directory: request.workspacePath } });
       const sessionID = createdSession.data?.id;
       if (!sessionID) throw new Error('headless Kilo failed to create a mutation session');
