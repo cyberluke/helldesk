@@ -584,9 +584,12 @@ app.post('/api/system/restart', async (c) => {
 });
 
 // ---------------------------------------------------------------- dashboard
-import { dashboardHtml, globalShellHtml } from './dashboard';
-app.get('/', async (c) => c.html(globalShellHtml()));
-app.get('/department', async (c) => c.html(dashboardHtml()));
+import { dashboardHtml } from './dashboard';
+// HELLDESK React is the product surface. The old standalone Department HTML is
+// retained only as an explicit legacy diagnostic route, never as a competing app.
+app.get('/', (c) => c.redirect('/helldesk/#/helldesk/default'));
+app.get('/department', (c) => c.redirect('/helldesk/#/helldesk/default'));
+app.get('/legacy/department', async (c) => c.html(dashboardHtml()));
 app.get('/health', (c) => c.json({ ok: true }));
 
 // ---------------------------------------------------------------- NAI-Lattice engine proxy
