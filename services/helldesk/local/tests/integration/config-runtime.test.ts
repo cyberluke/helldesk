@@ -133,6 +133,35 @@ describe('runtime config /v1/config', () => {
     expect(body.applied_live).toContain('daemon.retentionDays'); // retention is live
   });
 
+  it('PATCH toggles policy.verifyMode live (WAR-mode switch)', async () => {
+    // Defer verification (WAR mode): applies live + persists.
+    const res = await fetch(`${base}/v1/config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...auth },
+      body: JSON.stringify({ policy: { verifyMode: 'deferred' } }),
+    });
+    expect(res.status).toBe(200);
+    const body = await getJson(res);
+    expect(body.applied_live).toContain('policy.verifyMode');
+    const getRes = await fetch(`${base}/v1/config`, { headers: auth });
+    const getBody = await getJson(getRes);
+    expect(getBody.config.policy.verifyMode).toBe('deferred');
+    // Persisted for restart.
+    const persisted = JSON.parse(readFileSync(configPath, 'utf-8'));
+    expect(persisted.policy.verifyMode).toBe('deferred');
+    // Reject an invalid value (must stay deferred).
+    const bad = await fetch(`${base}/v1/config`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', ...auth },
+      body: JSON.stringify({ policy: { verifyMode: 'never' } }),
+    });
+    expect(bad.status).toBe(400);
+    // Clean up: revert to auto so later tests / the real config are unaffected.
+    await fetch(`${base}/v1/config`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', ...auth },
+      body: JSON.stringify({ policy: { verifyMode: 'auto' } }),
+    });
+  });
+
   it('PATCH rejects an invalid value without persisting', async () => {
     const before = readFileSync(configPath, 'utf-8');
     const res = await fetch(`${base}/v1/config`, {

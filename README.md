@@ -88,6 +88,14 @@ Capabilities and backends depend on the checked-out revision and configuration. 
 
 The operator console (`http://127.0.0.1:8790/`) is a live window into the engine, not a mock. The observability surfaces read the engine's own state through the control-plane proxy, so what you see is what the autonomy loop actually did:
 
+![HELLDESK dashboard — overview](assets/dashboard-overview.png)
+
+*The dashboard Overview: live ticket counts, workstations, recent agents, and the system topology.*
+
+![HELLDESK dashboard — task board](assets/dashboard-tasks.png)
+
+*The Kanban-style task board projecting real control-plane missions with their status.*
+
 | Surface | What it shows |
 | --- | --- |
 | **Kanban / board** | Real control-plane missions projected onto the board (`mission -> local ticket`), actions write through to the engine. No divergent second store. |

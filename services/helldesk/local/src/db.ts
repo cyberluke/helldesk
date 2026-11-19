@@ -30,6 +30,7 @@ const MIGRATIONS: Array<{ version: number; file: string }> = [
   { version: 6, file: '0006_mission_idempotency.sql' },
   { version: 7, file: '0007_mission_engine_matrix.sql' },
   { version: 8, file: '0008_job_transcript.sql' },
+  { version: 9, file: '0009_verify_mode.sql' },
 ];
 
 export function openDb(dbPath: string, opts?: { readonly?: boolean }): Db {

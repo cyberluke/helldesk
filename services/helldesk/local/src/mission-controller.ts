@@ -259,12 +259,10 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
     // mission advance to the NEXT ticket. The `verifyPending` sweep later drives the
     // whole batch through the real gates in one pass. This is the deliver-many,
     // verify-as-checkpoint workflow; it never risks the revision's durability.
-    if (deps.verifyMode?.() === 'deferred' && current.state !== 'VERIFYING') {
-      if (current.state === 'EVIDENCE_CAPTURED') {
-        updateRevision(d, current.revision_id, { state: 'PENDING_VERIFY' });
-        updateTicket(d, target.ticket_id, { verification_state: 'PENDING_VERIFY' });
-        emitMissionEvent(d, 'revision.deferred_verify', { mission_id: missionId, ticket_id: target.ticket_id, revision_id: current.revision_id });
-      }
+    if (current.state === 'EVIDENCE_CAPTURED' && deps.verifyMode?.() === 'deferred') {
+      updateRevision(d, current.revision_id, { state: 'PENDING_VERIFY' });
+      updateTicket(d, target.ticket_id, { verification_state: 'PENDING_VERIFY' });
+      emitMissionEvent(d, 'revision.deferred_verify', { mission_id: missionId, ticket_id: target.ticket_id, revision_id: current.revision_id });
       return { action: 'deferred-verify-pending', nextState: mission.state };
     }
     const ws = deps.workspacePathFor(missionId);
@@ -543,6 +541,18 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
       // run the independent ExcellenceGovernor over the immutable revision
       updateMissionState(d, missionId, 'VERIFYING');
       updateRevision(d, current.revision_id, { state: 'EVIDENCE_CAPTURED' });
+      // WAR-mode deferred verification: the mutation CHANGED and evidence is captured
+      // (durable + content-addressed). With verifyMode=deferred we do NOT spend the
+      // review + executable-gate pass on this revision right now — park it PENDING_VERIFY
+      // and let the Ender loop advance to the next ticket. The `verifyPending` sweep later
+      // drives the whole batch through the real gates. The snapshot/evidence is frozen so
+      // nothing is lost; we only defer WHEN we spend verification.
+      if (deps.verifyMode?.() === 'deferred') {
+        updateRevision(d, current.revision_id, { state: 'PENDING_VERIFY' });
+        updateTicket(d, target.ticket_id, { verification_state: 'PENDING_VERIFY' });
+        emitMissionEvent(d, 'revision.deferred_verify', { mission_id: missionId, ticket_id: target.ticket_id, revision_id: current.revision_id });
+        return { action: 'deferred-verify-pending', nextState: mission.state };
+      }
       // EPISTEMIC convergence at the mission level: re-review the SAME immutable
       // snapshot/revision only when the verdict is epistemically invalid
       // (INCONCLUSIVE = reviewer could not decide). A valid FINDINGS or PASS is
