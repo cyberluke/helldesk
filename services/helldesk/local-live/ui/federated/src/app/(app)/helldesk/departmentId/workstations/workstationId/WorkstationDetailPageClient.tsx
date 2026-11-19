@@ -51,6 +51,15 @@ export function WorkstationDetailPageClient({ departmentId, workstationId }: Wor
     })
   );
 
+  const moveTicket = useMutation(
+    trpc.helldesk.updateTicketStatus.mutationOptions({
+      onSuccess: () => {
+        void queryClient.invalidateQueries({ queryKey: trpc.helldesk.listTickets.queryKey() });
+      },
+      onError: err => toast.error(err.message),
+    })
+  );
+
   const deleteAgent = useMutation(
     trpc.helldesk.deleteAgent.mutationOptions({
       onSuccess: () => {
@@ -128,6 +137,7 @@ export function WorkstationDetailPageClient({ departmentId, workstationId }: Wor
                 }
               }}
               onSelectTicket={ticket => openDrawer({ type: 'ticket', ticketId: ticket.ticket_id, workstationId })}
+              onMoveTicket={(ticket, status) => moveTicket.mutate({ departmentId, workstationId, ticketId: ticket.ticket_id, status })}
               agentNameById={agentNameById}
             />
           </div>
