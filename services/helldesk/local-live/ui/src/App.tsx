@@ -90,7 +90,7 @@ function DepartmentShell() {
         <div className="flex h-dvh min-w-0 flex-1 flex-col overflow-hidden">
           <TerminalBarProvider>
             <DrawerStackProvider renderContent={renderDrawerContent}>
-              <main className="min-h-0 flex-1 overflow-hidden pb-[38px]">
+              <main className="min-h-0 flex-1 overflow-auto pb-[38px] [scrollbar-color:rgba(167,139,250,.28)_transparent] [scrollbar-width:thin]">
                 <Outlet />
               </main>
               <TerminalBar departmentId={departmentId} />
