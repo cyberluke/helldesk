@@ -53,7 +53,7 @@ export type LooseWorkstation = z.output<typeof LooseWorkstationSchema>;
 export const TicketSchema = z.object({
   ticket_id: z.string(),
   type: z.enum(['issue', 'message', 'escalation', 'merge_request', 'shift', 'TicketCase', 'agent']),
-  status: z.enum(['open', 'in_progress', 'closed', 'failed']),
+  status: z.enum(['open', 'in_progress', 'in_review', 'closed', 'failed']),
   title: z.string(),
   body: z.string().nullable(),
   workstation_id: z.string().nullable(),
@@ -259,9 +259,25 @@ export const api = {
   deleteTicket: async (departmentId: string, workstationId: string, ticketId: string): Promise<void> => {
     await helldeskFetch(`/api/departments/${departmentId}/workstations/${workstationId}/tickets/${ticketId}`, { method: 'DELETE' });
   },
+  updateTicketStatus: async (departmentId: string, workstationId: string, ticketId: string, status: string): Promise<LooseTicket> =>
+    parseSuccessData(
+      await helldeskFetch(`/api/departments/${departmentId}/workstations/${workstationId}/tickets/${ticketId}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status, agent_id: 'operator' }),
+      }),
+      LooseTicketSchema,
+    ),
 
   listAgents: async (departmentId: string, workstationId: string): Promise<LooseAgent[]> =>
     parseSuccessData(await helldeskFetch(`/api/departments/${departmentId}/workstations/${workstationId}/agents`), LooseAgentSchema.array()),
+  createAgent: async (departmentId: string, workstationId: string, input: { role: string; name: string; identity: string }): Promise<LooseAgent> =>
+    parseSuccessData(
+      await helldeskFetch(`/api/departments/${departmentId}/workstations/${workstationId}/agents`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+      LooseAgentSchema,
+    ),
   deleteAgent: async (departmentId: string, workstationId: string, agentId: string): Promise<void> => {
     await helldeskFetch(`/api/departments/${departmentId}/workstations/${workstationId}/agents/${agentId}`, { method: 'DELETE' });
   },
