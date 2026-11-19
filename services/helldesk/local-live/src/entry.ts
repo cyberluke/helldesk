@@ -232,7 +232,8 @@ app.post('/api/departments/:departmentId/workstations/:workstationId/agents/:age
 app.post('/api/departments/:departmentId/workstations/:workstationId/memo', (c) => handleSendMemo(c, c.req.param()));
 app.get('/api/departments/:departmentId/memos', async (c) => {
   const department = runtime.getDepartment(c.req.param('departmentId'));
-  return c.json(resSuccess(await department.listTickets({ type: 'message' })));
+  const memos = (await department.listTickets({ type: 'message' })).filter(ticket => ticket.type === 'message');
+  return c.json(resSuccess(memos));
 });
 app.post('/api/departments/:departmentId/memos', async (c) => {
   const body = await c.req.json().catch(() => ({}));
