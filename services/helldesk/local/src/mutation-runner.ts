@@ -35,9 +35,26 @@ import { z } from 'zod';
 export type MutationOutcome =
   | 'CHANGED'
   | 'NO_CHANGE'
+  | 'SCRATCH_ONLY'    // delta is only probe/scratch/diagnostic files, NOT the deliverable
   | 'BLOCKED_EXTERNAL'
   | 'FAILED_TRANSIENT'
   | 'FAILED_PLAN';
+
+/** Classify a changed file as "diagnostic probe / scratch reporter" (NOT a real
+ *  deliverable). Used to break the vicious cycle where the mutation agent writes
+ *  throwaway `_probe.cmd`/`_run_test.cmd`/`*.log` helpers instead of the named
+ *  package source, the reviewer rejects it ("no framework deliverable exists"),
+ *  and the mission replans forever (the observed 4614-revision runaway).
+ *  Heuristic on basename — conservative: only unambiguous probe/scratch shapes. */
+export function isScratchOnlyFile(filePath: string): boolean {
+  const base = filePath.replace(/\\/g, '/').split('/').pop() ?? filePath
+  const name = base.toLowerCase()
+  if (name.startsWith('_') && name.endsWith('.cmd')) return true          // _probe.cmd, _run_test.cmd
+  if (name.startsWith('_') && name.endsWith('.ps1')) return true          // _probe.ps1
+  if (name.endsWith('.log') || name.endsWith('.out')) return true          // diagnostic dumps
+  if (/probe/.test(name) && /\.(cmd|ps1|sh|bat|ts|js|mjs)$/.test(name)) return true
+  return false
+}
 
 export interface MutationRunner {
   execute(request: RepairRequest, signal: AbortSignal): Promise<RepairResult>;
@@ -147,11 +164,29 @@ export class KiloMutationRunner implements MutationRunner {
     this.agent = 'kilo-mutator';
   }
 
+  /** How many operator plugins (satin memory + gates + continuity hooks) the last
+   *  buildSdkConfig wired into this mutation session. Exposed for observability —
+   *  the engine depends on a NON-ZERO value; a zero here is a hard invariant failure. */
+  mutationPluginCount = 0;
+
   /** Build the SDK Config for ONE writable mutation agent (write+shell+code tools
    *  ALLOWED — the opposite of the read-only reviewer). Provider routing is
    *  identical to kilo-headless so the same model route serves both. */
   private buildSdkConfig(directory: string): Record<string, unknown> {
     const inherited = writableKiloConfiguration();
+    // INVARIANT (operator critical): the autonomous mutation session MUST inherit
+    // the operator's full plugin set — satin memory (the lamp), gate plugins, and
+    // every continuity/recovery hook. The engine depends on these for cross-restart
+    // memory continuity and for the same quality discipline the interactive session
+    // is under. If writableKiloConfiguration returns no plugins, a silently-stripped
+    // hook is the EXACT failure that leaves an agent context-memory-lost and loops
+    // forever (observed 4614-revision runaway). Fail loudly, never mutate with a
+    // hobbled memory/gate runtime.
+    const pluginList = (inherited.plugin as unknown[] | undefined) ?? []
+    if (!pluginList.length) {
+      throw new Error('mutation-session-no-plugins: writableKiloConfiguration returned zero plugins — the autonomous mutation agent would run WITHOUT satin-memory/gate hooks. Refusing to mutate: restore the operator plugin config (~/.config/kilo/plugin) before re-dispatching.')
+    }
+    this.mutationPluginCount = pluginList.length
     const route = inherited.model || `${this.opts.providerID}/${this.opts.modelID}`;
     const slash = route.indexOf('/');
     if (slash < 1 || slash === route.length - 1) throw new Error('Kilo requires a configured provider/model route');
@@ -324,6 +359,7 @@ export class KiloMutationRunner implements MutationRunner {
         request.acceptanceGates?.length ? `ACCEPTANCE GATES (MUST satisfy all before returning):\n- ${request.acceptanceGates.join('\n- ')}\nFor each gate, implement the contract explicitly, cover edge cases (coercive zeros, "0", false, null, NaN, Infinity where applicable), execute tests, and capture test output as evidence.` : '',
         `Allowed capabilities: ${request.allowedCapabilities.join(', ')}`,
         `Work in ${request.workspacePath}. Complete the full objective AND every acceptance gate without scope cuts. Reuse existing components and build the missing deltas. Record every command you run and every artifact you produce.`,
+        `HARD RULE: the delta MUST be the real deliverable (the framework/scene/entity/persistence/renderer/Tauri source under the objective's target directories), committed as your working-tree/files in ${request.workspacePath}. Diagnostic probe/scratch helpers (e.g. _probe.cmd, _run_test.cmd, _probe2.cmd, *.log dumps, throwaway scripts) are NOT a valid delta and will be rejected as "no framework deliverable". Inspect the layout if you must, but the files you WRITE must be the actual package/module source the objective names — not scripts that inspect them. If only probe/scratch files were created, you have not completed the task: keep writing the real modules.`,
       ].filter(Boolean).join('\n\n');
 
       // Abort handling: tie the session to the caller's AbortSignal so a cancel
@@ -405,6 +441,26 @@ export class KiloMutationRunner implements MutationRunner {
         void metadata;
         if (after !== before) {
           changed.push(...changedNow);
+          // SCRATCH-ONLY GUARD (war fix): if the produced delta is only diagnostic
+          // probe/run/scratch helpers (e.g. `_probe.cmd`, `_run_test.cmd`, `*.log`
+          // dumps, throwaway `_*.cmd`), it is NOT a real deliverable. The A/B
+          // reviewer would reject it as "no framework deliverable exists," which
+          // is the observed 4614-revision vicious cycle. So classify it explicitly
+          // instead of routing a doomed review: the controller surfaces this as a
+          // probe-only stall and the write-chase keeps pressing for real modules.
+          const scratchOnly = changedNow.length > 0 && changedNow.every(isScratchOnlyFile);
+          if (scratchOnly) {
+            const replyLog = responses.length ? `agent responses: ${responses.join(' | ')}` : 'no assistant response captured';
+            return {
+              outcome: 'SCRATCH_ONLY',
+              changedFiles: changed,
+              commandsExecuted: commands,
+              artifactsProduced: artifacts,
+              workspaceFingerprintBefore: before,
+              workspaceFingerprintAfter: after,
+              error: `scratch-only-delta (${changedNow.join(', ')}): the mutation produced only diagnostic probe/run helpers, not the real deliverable — ${replyLog}`,
+            };
+          }
           return {
             outcome: 'CHANGED',
             changedFiles: changed,

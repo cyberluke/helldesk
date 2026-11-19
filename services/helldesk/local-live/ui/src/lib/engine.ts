@@ -205,29 +205,73 @@ export const local = {
 // ── Control-plane mission telemetry (proxied server-side; the browser never
 // holds the token). `<data>/missions` carries live ExcellenceGovernor mission state for
 // `mission`, so an actively-working agent is never silent in the operator-console.
+// NOTE: the control-plane /v1/missions returns CAMELCASE (missionId, verifiedAt,
+// updatedAt, blockedReason). The accessor normalizes to BOTH so callers (board +
+// observability) can read either shape without surprises.
 export interface ColonyMission {
   mission_id?: string
+  missionId?: string
   state?: string
   current_ticket_id?: string | null
+  currentTicketId?: string | null
   current_revision_id?: string | null
   updated_at?: string | null
+  updatedAt?: string | null
   verified_at?: string | null
+  verifiedAt?: string | null
   blocked_reason?: string | null
+  blockedReason?: string | null
   objective?: string
   idempotency_key?: string
 }
+const normMissionId = (o: any): string => o?.mission_id ?? o?.missionId ?? ''
+const normMissionUpdated = (o: any): string | null => o?.updated_at ?? o?.updatedAt ?? null
+const normMissionVerified = (o: any): string | null => o?.verified_at ?? o?.verifiedAt ?? null
+const normMissionBlocked = (o: any): string | null => o?.blocked_reason ?? o?.blockedReason ?? null
+
 export async function listColonyMissions(): Promise<ColonyMission[]> {
   const res = await fetch('/api/v1/missions', { signal: AbortSignal.timeout(8000) }).catch(() => null)
   if (!res || !res.ok) return []
   try {
-    const j = await res.json()
-    return Array.isArray(j) ? j : (j.missions ?? [])
+    const j = (await res.json()) as any
+    const raw = Array.isArray(j) ? j : (j.missions ?? []) as any[]
+    return raw.map((r) => ({
+      mission_id: normMissionId(r),
+      missionId: normMissionId(r),
+      state: r?.state,
+      current_ticket_id: r?.current_ticket_id ?? r?.currentTicketId ?? null,
+      currentTicketId: r?.current_ticket_id ?? r?.currentTicketId ?? null,
+      updated_at: normMissionUpdated(r),
+      updatedAt: normMissionUpdated(r),
+      verified_at: normMissionVerified(r),
+      verifiedAt: normMissionVerified(r),
+      blocked_reason: normMissionBlocked(r),
+      blockedReason: normMissionBlocked(r),
+      objective: r?.objective,
+      idempotency_key: r?.idempotency_key ?? r?.idempotencyKey,
+    }))
   } catch { return [] }
 }
 export async function getColonyMission(missionId: string): Promise<ColonyMission | null> {
   const res = await fetch(`/api/v1/missions/${encodeURIComponent(missionId)}`, { signal: AbortSignal.timeout(8000) }).catch(() => null)
   if (!res || !res.ok) return null
-  try { return (await res.json()).mission ?? null } catch { return null }
+  try {
+    const raw = ((await res.json()) as any)?.mission ?? null
+    if (!raw) return null
+    return {
+      mission_id: normMissionId(raw),
+      missionId: normMissionId(raw),
+      state: raw?.state,
+      current_ticket_id: raw?.current_ticket_id ?? raw?.currentTicketId ?? null,
+      updated_at: normMissionUpdated(raw),
+      updatedAt: normMissionUpdated(raw),
+      verified_at: normMissionVerified(raw),
+      verifiedAt: normMissionVerified(raw),
+      blocked_reason: normMissionBlocked(raw),
+      blockedReason: normMissionBlocked(raw),
+      objective: raw?.objective,
+    }
+  } catch { return null }
 }
 
 // ── Control-plane mission board (kanban source of truth) ────────────────────

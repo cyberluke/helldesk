@@ -241,3 +241,11 @@ td { padding: 9px 10px; border-bottom: 1px solid rgba(140, 155, 190, 0.07); }
 @media (max-width: 1100px) { .operator-layout { grid-template-columns: 196px minmax(0, 1fr); gap: 14px; } .operator-conversation-heading { align-items: flex-start; flex-direction: column; } }
 @media (max-width: 760px) { .operator-layout { grid-template-columns: minmax(0, 1fr); } .operator-hero { align-items: flex-start; flex-direction: column; gap: 14px; } .operator-crew { display: flex; gap: 8px; overflow: auto; padding: 10px; } .operator-crew .operator-section-heading, .operator-contract { display: none; } .operator-person { width: auto; min-width: 160px; flex: none; } .operator-conversation-heading, .operator-steering { padding: 18px; } .operator-stream { padding: 4px 16px; } .operator-compose { margin: 12px; } .operator-steer-fields { grid-template-columns: 1fr; } .operator-compose-footer { align-items: flex-start; } .operator-compose-footer > span { max-width: 120px; } .operator-page .ts-field { flex-wrap: wrap; } }
 @media (prefers-reduced-motion: reduce) { .operator-page, .operator-message { animation: none; } .operator-page *, .operator-page *::before, .operator-page *::after { transition: none !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; } }
+
+/* ── Operations Console (SOTA observability) ──────────────────────────────── */
+.observability .kpi { border-left: 3px solid var(--line); transition: border-color .2s ease; }
+.observability .kpi:hover { border-left-color: var(--accent); }
+.observability .card { backdrop-filter: blur(2px); }
+.observability .mission-list > div { transition: background .15s ease, transform .15s ease; }
+.observability .mission-list > div:hover { background: rgba(110,231,183,.05); transform: translateX(2px); }
+.observability .log > div:hover { background: rgba(110,231,183,.04); }

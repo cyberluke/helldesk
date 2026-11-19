@@ -119,6 +119,17 @@ const MAX_INCONCLUSIVE_REVISIONS = 3;
  *  FINDINGS is accepted immediately; only epistemically-invalid (INCONCLUSIVE)
  *  verdicts trigger a bounded re-review. Default 3. */
 const MAX_CONVERGENT_REVIEW_ATTEMPTS = 3;
+/** HARD ceiling on how many times a single ticket may be replanned (NO_CHANGE /
+ *  FAILED_PLAN / SCRATCH_ONLY / identical-failure-no-delta) before the mission
+ *  surfaces as BLOCKED. This is a SAFETY VALVE, deliberately set far above any
+ *  realistic convergence so legitimate long-horizon autonomous work (the kind
+ *  the Inquisitor / review loop exists to enable — "a weekend debugging one line"
+ *  is thousands of genuine revisions, not a bug) is never throttled. It only
+ *  trips on a true unbounded spin (e.g. a mutator that can never satisfy its own
+ *  gates). The observed 4614-revision runaway would have kept being legitimate if
+ *  each revision had landed a real delta toward the objective rather than
+ *  probe-only output; it is caught by the SCRATCH_ONLY classifier + this ceiling. */
+const MAX_PLAN_REVISIONS = 3000;
 
 /** The single durable controller operation. May be called on every scheduler tick.
  *  Returns a human-readable action for observability. Idempotency is enforced by
@@ -357,6 +368,14 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
     const prev = priorRevision;
     const prevWasEmpty = prev?.workspace_fingerprint_before && prev?.workspace_fingerprint_after && prev.workspace_fingerprint_before === prev.workspace_fingerprint_after;
     if (prev && prev.failure_signature === current.failure_signature && prevWasEmpty) {
+      // Replan cap for the identical-signature loop (same guard as NO_CHANGE):
+      // never burn unbounded revisions on a mutation that cannot produce a delta.
+      if (current.revision_no >= MAX_PLAN_REVISIONS) {
+        updateMissionState(d, missionId, 'BLOCKED_EXTERNAL', { blocked_reason: `replan-exhausted: identical-failure-no-delta after ${current.revision_no} revisions (mutator not producing a recognized content delta)` });
+        updateRevision(d, current.revision_id, { state: 'BLOCKED' });
+        emitMissionEvent(d, 'mission.blocked', { mission_id: missionId, ticket_id: target.ticket_id, revision_id: current.revision_id, blocked_reason: 'replan-exhausted', revisions: current.revision_no });
+        return { action: 'replan-exhausted-blocked', nextState: 'BLOCKED_EXTERNAL' };
+      }
       updateMissionState(d, missionId, 'REPLANNING');
       emitMissionEvent(d, 'mission.replanned', { mission_id: missionId, ticket_id: target.ticket_id, revision_id: current.revision_id, reason: 'identical-failure-no-delta' });
       const next = createRevision(d, { ticket_id: target.ticket_id, parent_revision_id: current.revision_id, hypothesis_key: `hyp-${(current.revision_no + 1)}`, workspace_fingerprint_before: await fingerprintOrEmpty(workspace) });
@@ -505,7 +524,19 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
       return { action: 'blocked-external', nextState: 'BLOCKED_EXTERNAL' };
     }
     case 'NO_CHANGE':
-    case 'FAILED_PLAN': {
+    case 'FAILED_PLAN':
+    case 'SCRATCH_ONLY': {
+      // Replan cap: a ticket that cannot produce a recognized delta after
+      // MAX_PLAN_REVISIONS is NOT made to loop forever — surface it as BLOCKED
+      // with a precise reason so the operator intervenes. This is the durable
+      // guard against the observed 4000+ revision runaway (a hung mutator that
+      // commits nothing advanceMission recognizes as a change).
+      if (current.revision_no >= MAX_PLAN_REVISIONS) {
+        updateMissionState(d, missionId, 'BLOCKED_EXTERNAL', { blocked_reason: `replan-exhausted: ${result.outcome} after ${current.revision_no} revisions (mutator not producing a recognized delta)` });
+        updateRevision(d, current.revision_id, { state: 'BLOCKED' });
+        emitMissionEvent(d, 'mission.blocked', { mission_id: missionId, ticket_id: target.ticket_id, revision_id: current.revision_id, blocked_reason: 'replan-exhausted', revisions: current.revision_no });
+        return { action: 'replan-exhausted-blocked', nextState: 'BLOCKED_EXTERNAL' };
+      }
       updateMissionState(d, missionId, 'REPLANNING');
       if (request.activeHypotheses[0]) {
         upsertClaim(d, { mission_id: missionId, canonical_key: `falsified:${hypKey(request)}`, claim: request.activeHypotheses[0], status: 'FALSIFIED', revision_id: current.revision_id });
