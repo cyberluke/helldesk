@@ -1,6 +1,7 @@
 import type { Db } from './db';
 import { generateId, now } from './ids';
 import type { SubjectKind } from './schemas';
+import { parseReviewControls, type ReviewControls } from './review-controls';
 
 /** Job repository + creation with immutable fingerprint dedupe. */
 
@@ -17,6 +18,8 @@ export interface CreateJobInput {
   headHash?: string | null;
   dirtyHash?: string | null;
   untrackedHash?: string | null;
+  /** Per-task review policy (which reviewer/governor stages may run). */
+  controls?: ReviewControls;
 }
 
 export type JobRecord = {
@@ -62,9 +65,22 @@ export function createJob(d: Db, input: CreateJobInput): JobRecord {
         headHash: input.headHash ?? null,
         dirtyHash: input.dirtyHash ?? null,
         untrackedHash: input.untrackedHash ?? null,
+        controls: input.controls ?? {},
       })
     );
   return getJob(d, jobId)!;
+}
+
+/** The job's persisted review policy (defaults = all stages enabled). */
+export function getJobReviewControls(d: Db, jobId: string): ReviewControls {
+  const row = d.db.query<{ meta: string | null }, [string]>('SELECT meta FROM review_jobs WHERE job_id=?').get(jobId);
+  if (!row?.meta) return {};
+  try {
+    const meta = JSON.parse(row.meta) as { controls?: unknown };
+    return parseReviewControls(meta.controls);
+  } catch {
+    return {};
+  }
 }
 
 export function getJob(d: Db, jobId: string): JobRecord | null {

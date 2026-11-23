@@ -48,7 +48,7 @@ const FrontDeskSlingBatchBody = z
   })
   .superRefine((data, ctx) => {
     // Require dependency graph unless explicitly opted out with parallel: true.
-    // Without depends_on, all polecats start simultaneously on the same codebase
+    // Without depends_on, all souls start simultaneously on the same codebase
     // and produce merge conflicts.
     if (data.parallel) return;
     if (data.tasks.length <= 1) return;
@@ -58,7 +58,7 @@ const FrontDeskSlingBatchBody = z
         code: z.ZodIssueCode.custom,
         message:
           'Shift has multiple tasks but none declare depends_on. ' +
-          'Without dependencies, all polecats start at the same time on the same codebase and will produce merge conflicts. ' +
+          'Without dependencies, all souls start at the same time on the same codebase and will produce merge conflicts. ' +
           'Add depends_on to express task ordering, or set parallel: true if ALL tasks are genuinely independent ' +
           '(they touch completely different files with no shared state).',
         path: ['tasks'],
@@ -284,7 +284,7 @@ export async function handleFrontDeskSendMemo(c: Context<HelldeskAppEnv>, params
 /**
  * POST /api/frontDesk/:departmentId/tools/sling-batch
  * Sling multiple tickets as a tracked shift. Creates N tickets + 1 shift,
- * assigns polecats, and dispatches all in one call.
+ * assigns souls, and dispatches all in one call.
  */
 export async function handleFrontDeskSlingBatch(c: Context<HelldeskAppEnv>, params: { departmentId: string }) {
   const parsed = FrontDeskSlingBatchBody.safeParse(await parseJsonBody(c));

@@ -16,6 +16,22 @@ A developer agent makes a change. Independent reviewers interrogate the result. 
 
 > HELLDESK is a software project, not a supernatural employment scheme. The corporate afterlife is fictional. The tests are not.
 
+## Quick start (Windows)
+
+Requirements: Windows 10/11, PowerShell 7, Bun (or run `.\scripts\install.cmd -InstallBun`), Git (recommended).
+
+```powershell
+# one-time setup: dependencies, UI build, logon services, Start Menu shortcut
+.\scripts\install.cmd
+
+# daily: start everything and open the Operator Console
+.\scripts\start.cmd
+```
+
+The installer is user-scoped (no Administrator) and safe to re-run. It registers two persistent logon services — the HELLDESK control plane and the Operator Console — and adds a **HELLDESK** Start Menu shortcut. Use `.\scripts\start.cmd -Stop` to stop the stack and `.\scripts\start.cmd -Status` to inspect it. The Operator Console is at `http://127.0.0.1:8790/helldesk/`.
+
+Installer options: `-DesktopShortcut`, `-WithKiloPlugin`, `-InstallBun`, `-DryRun`, `-Force`.
+
 ## Why it exists
 
 Multi-agent coding demos are easy to start and surprisingly hard to trust. Once work spans multiple sessions, machines, models, and repositories, the real problems are no longer prompt engineering:
@@ -86,7 +102,7 @@ Capabilities and backends depend on the checked-out revision and configuration. 
 
 ## Operate & observe
 
-The operator console (`http://127.0.0.1:8790/`) is a live window into the engine, not a mock. The observability surfaces read the engine's own state through the control-plane proxy, so what you see is what the autonomy loop actually did:
+The operator console (`http://127.0.0.1:8790/helldesk/`) is a live window into the engine, not a mock. The observability surfaces read the engine's own state through the control-plane proxy, so what you see is what the autonomy loop actually did:
 
 ![HELLDESK dashboard — overview](assets/dashboard-overview.png)
 
@@ -103,7 +119,7 @@ The operator console (`http://127.0.0.1:8790/`) is a live window into the engine
 | **Agents** | The live worker crew — reviewers, adjudicators, and the **soul-chamber `mutation` worker** (the mutator), with provider/model and time-on-job. Stale/zombie workers are reclaimed automatically. |
 | **Transcript** | The durable per-mission journal: every mutation tool call, per-file diff, review finding, and mission event, keyed by revision/job. This is the "what did they actually do?" view that makes steering evidence-based instead of guesswork. |
 
-Engine surfaces (`/v1/health`, `/v1/missions`, `/v1/workers`, `/v1/events`, `/v1/journal`) are reachable through the dashboard proxy (which injects the control-plane token) and are used by the GUI so agents and operators always see the same truth.
+Engine surfaces (`/v1/health`, `/v1/missions`, `/v1/workers`, `/v1/events`, `/v1/observability`, `/v1/journal`) are reachable through the dashboard proxy (which injects the control-plane token) and are used by the GUI so agents and operators always see the same truth. `/v1/events?tail=N` returns the newest journal rows (the cursor form `?after=N` remains for SSE resume); `/v1/observability` aggregates the complete 24h window server-side, including real event types and per-workspace attribution.
 
 ## The corporate hierarchy (yes, it's a bit)
 

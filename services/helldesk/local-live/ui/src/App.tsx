@@ -1,35 +1,34 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { HashRouter, Outlet, Route, Routes, Navigate, NavLink, useParams } from 'react-router-dom'
-import { useEffect, useState } from 'react'
+import { HashRouter, Outlet, Route, Routes, Navigate, useParams } from 'react-router-dom'
 import { Toaster } from 'sonner'
-import { TerminalBarProvider } from '@/components/helldesk/TerminalBarContext'
+import { TerminalBarProvider, useTerminalBar } from '@/components/helldesk/TerminalBarContext'
 import { DrawerStackProvider } from '@/components/helldesk/DrawerStack'
 import { renderDrawerContent } from '@/components/helldesk/DrawerStackContent'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { HelldeskDepartmentSidebar } from '@/components/helldesk/HelldeskDepartmentSidebar'
 import { TerminalBar } from '@/components/helldesk/TerminalBar'
-import { engine } from './lib/engine'
 import BreakRoomChat from './views/BreakRoomChat'
 import BreakRoomExcellenceGovernor from './views/ExcellenceGovernor'
 import EngineConfig from './views/Config'
 import TaskStudio from './views/TaskStudio'
 import Transcript from './views/Transcript'
 
-// Verbatim HELLDESK client pages (federated from cyberluke/helldesk cloud source).
+// Verbatim HELLDESK client pages (federated from the HELLDESK cloud source).
 import { DepartmentListPageClient } from '../federated/src/app/(app)/helldesk/DepartmentListPageClient'
 import { DepartmentOverviewPageClient } from '../federated/src/app/(app)/helldesk/departmentId/DepartmentOverviewPageClient'
 import { DepartmentSettingsPageClient } from '../federated/src/app/(app)/helldesk/departmentId/settings/DepartmentSettingsPageClient'
 import { MergesPageClient } from '../federated/src/app/(app)/helldesk/departmentId/merges/MergesPageClient'
 import { TicketsPageClient } from '../federated/src/app/(app)/helldesk/departmentId/tickets/TicketsPageClient'
-import { ObservabilityPageClient } from '../federated/src/app/(app)/helldesk/departmentId/observability/ObservabilityPageClient'
 import { MemoPageClient } from '../federated/src/app/(app)/helldesk/departmentId/memo/MemoPageClient'
 import { AgentsPageClient } from '../federated/src/app/(app)/helldesk/departmentId/agents/AgentsPageClient'
+import { ObservabilityPageClient } from '../federated/src/app/(app)/helldesk/departmentId/observability/ObservabilityPageClient'
+import { CommitsPageClient } from '../federated/src/app/(app)/helldesk/departmentId/commits/CommitsPageClient'
 import { WorkstationDetailPageClient } from '../federated/src/app/(app)/helldesk/departmentId/workstations/workstationId/WorkstationDetailPageClient'
 
 // TanStack Query client for the federated HELLDESK UI.
 const queryClient = new QueryClient({
   defaultOptions: {
-    queries: { staleTime: 5000, refetchOnWindowFocus: false, retry: 1 },
+    queries: { staleTime: 3000, refetchOnWindowFocus: true, retry: 1 },
   },
 })
 
@@ -50,10 +49,6 @@ function DepartmentTicketsRoute() {
   const { departmentId = '' } = useParams()
   return <TicketsPageClient departmentId={departmentId} />
 }
-function DepartmentObsRoute() {
-  const { departmentId = '' } = useParams()
-  return <ObservabilityPageClient departmentId={departmentId} />
-}
 function DepartmentMemoRoute() {
   const { departmentId = '' } = useParams()
   return <MemoPageClient departmentId={departmentId} />
@@ -61,6 +56,14 @@ function DepartmentMemoRoute() {
 function DepartmentAgentsRoute() {
   const { departmentId = '' } = useParams()
   return <AgentsPageClient departmentId={departmentId} />
+}
+function DepartmentObservabilityRoute() {
+  const { departmentId = '' } = useParams()
+  return <ObservabilityPageClient departmentId={departmentId} />
+}
+function DepartmentCommitsRoute() {
+  const { departmentId = '' } = useParams()
+  return <CommitsPageClient departmentId={departmentId} />
 }
 function DepartmentWorkstationRoute() {
   const { departmentId = '', workstationId = '' } = useParams()
@@ -84,48 +87,16 @@ function HelldeskLanding() {
  */
 function DepartmentShell() {
   const { departmentId = '' } = useParams()
-  const [online, setOnline] = useState<boolean | null>(null)
-  useEffect(() => {
-    let alive = true
-    const ping = async () => {
-      const h = await engine.health()
-      if (alive) setOnline(h)
-    }
-    ping()
-    const t = setInterval(ping, 8000)
-    return () => {
-      alive = false
-      clearInterval(t)
-    }
-  }, [])
 
   return (
-    <div className="flex min-h-screen bg-[oklch(0.1_0_0)] text-white">
+    <div className="flex h-dvh overflow-hidden bg-[oklch(0.1_0_0)] text-white">
       <SidebarProvider>
-        <div className="hidden md:block">
+        <div className="hidden h-dvh md:block">
           <HelldeskDepartmentSidebar departmentId={departmentId} />
         </div>
-        <div className="min-w-0 flex-1">
-          <header className="mission-topbar">
-            <div className="mission-wordmark">NAI <span>HELLDESK</span></div>
-            <nav aria-label="Mission navigation">
-              <NavLink to={`/helldesk/${departmentId}/studio`}>Task Studio</NavLink>
-              <NavLink to={`/helldesk/${departmentId}/tickets`}>Kanban</NavLink>
-              <NavLink to={`/helldesk/${departmentId}/chat`}>Operator-console</NavLink>
-              <NavLink to={`/helldesk/${departmentId}/transcript`}>Transcript</NavLink>
-              <NavLink to={`/helldesk/${departmentId}/config`}>Connections</NavLink>
-            </nav>
-            <span className="mission-connection" data-state={online===null?'connecting':online?'online':'offline'}><i/>{online===null?'Connecting':online?'Engine reachable':'Engine unavailable'}</span>
-          </header>
+        <div className="flex h-dvh min-w-0 flex-1 flex-col overflow-hidden">
           <TerminalBarProvider>
-            <DrawerStackProvider renderContent={renderDrawerContent}>
-              <div className="flex min-h-screen flex-col pb-[340px]">
-                <div className="flex-1">
-                  <Outlet />
-                </div>
-              </div>
-              <TerminalBar departmentId={departmentId} />
-            </DrawerStackProvider>
+            <ShellBody departmentId={departmentId} />
           </TerminalBarProvider>
         </div>
       </SidebarProvider>
@@ -147,7 +118,8 @@ export default function App() {
             <Route path="agents" element={<DepartmentAgentsRoute />} />
             <Route path="merges" element={<DepartmentMergesRoute />} />
             <Route path="memo" element={<DepartmentMemoRoute />} />
-            <Route path="observability" element={<DepartmentObsRoute />} />
+            <Route path="observability" element={<DepartmentObservabilityRoute />} />
+            <Route path="commits" element={<DepartmentCommitsRoute />} />
             <Route path="settings" element={<DepartmentSettingsRoute />} />
             <Route path="workstations/:workstationId" element={<DepartmentWorkstationRoute />} />
             <Route path="chat" element={<BreakRoomChat />} />
@@ -159,5 +131,26 @@ export default function App() {
         </Routes>
       </HashRouter>
     </QueryClientProvider>
+  )
+}
+
+/**
+ * The main content must RESERVE the expanded FrontDesk dock's height; otherwise
+ * the terminal overlays the bottom of every page (the operator cannot see it).
+ */
+function ShellBody({ departmentId }: { departmentId: string }) {
+  const { collapsed } = useTerminalBar()
+  return (
+    <DrawerStackProvider renderContent={renderDrawerContent}>
+      <main
+        className={
+          'min-h-0 flex-1 overflow-auto [scrollbar-color:rgba(167,139,250,.28)_transparent] [scrollbar-width:thin] ' +
+          (collapsed ? 'pb-[38px]' : 'pb-[338px]')
+        }
+      >
+        <Outlet />
+      </main>
+      <TerminalBar departmentId={departmentId} />
+    </DrawerStackProvider>
   )
 }

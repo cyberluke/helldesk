@@ -15,6 +15,12 @@ import {
   PauseCircle,
   Memo,
   ChevronRight,
+  Hexagon,
+  Layers,
+  RefreshCw,
+  ShieldCheck,
+  XOctagon,
+  Zap,
 } from '@/lib/icons';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -28,6 +34,34 @@ const EVENT_ICONS: Record<string, typeof Activity> = {
   review_submitted: GitMerge,
   review_completed: GitMerge,
   memo_sent: Memo,
+  // Real engine event vocabulary (projected from the control-plane journal).
+  'job.enqueued': PlayCircle,
+  'job.requeued': RefreshCw,
+  'job.retried': RefreshCw,
+  'job.completed': CheckCircle,
+  'job.cancelled': XOctagon,
+  'report.ready': GitMerge,
+  'revision.created': Layers,
+  'revision.reviewed': GitMerge,
+  'revision.rejected': XOctagon,
+  'revision.retry': RefreshCw,
+  'revision.recovered': RefreshCw,
+  'revision.verified': CheckCircle,
+  'mission.created': Hexagon,
+  'mission.state_changed': Activity,
+  'mission.replanned': RefreshCw,
+  'mission.blocked': AlertTriangle,
+  'mission.verified': CheckCircle,
+  'mission.verified_10_10': CheckCircle,
+  'mission.resumed': PlayCircle,
+  'mission.engine_route_propagated': Zap,
+  'ticket.ready': PlayCircle,
+  'ticket.verified': CheckCircle,
+  'ticket.verification_changed': Activity,
+  'evidence.captured': ShieldCheck,
+  'quality.updated': ShieldCheck,
+  'repair.plan': RefreshCw,
+  'repair.failed': AlertTriangle,
 };
 
 const EVENT_COLORS: Record<string, string> = {
@@ -40,6 +74,32 @@ const EVENT_COLORS: Record<string, string> = {
   review_submitted: 'text-indigo-500',
   review_completed: 'text-green-600',
   memo_sent: 'text-sky-500',
+  'job.enqueued': 'text-sky-400',
+  'job.requeued': 'text-amber-400',
+  'job.retried': 'text-amber-400',
+  'job.completed': 'text-emerald-400',
+  'job.cancelled': 'text-red-400',
+  'report.ready': 'text-indigo-400',
+  'revision.created': 'text-violet-400',
+  'revision.reviewed': 'text-indigo-400',
+  'revision.rejected': 'text-red-400',
+  'revision.retry': 'text-amber-400',
+  'revision.recovered': 'text-sky-400',
+  'revision.verified': 'text-emerald-400',
+  'mission.created': 'text-violet-400',
+  'mission.state_changed': 'text-white/40',
+  'mission.replanned': 'text-amber-400',
+  'mission.blocked': 'text-red-400',
+  'mission.verified': 'text-emerald-400',
+  'mission.verified_10_10': 'text-emerald-400',
+  'mission.resumed': 'text-sky-400',
+  'ticket.ready': 'text-sky-400',
+  'ticket.verified': 'text-emerald-400',
+  'ticket.verification_changed': 'text-white/40',
+  'evidence.captured': 'text-sky-400',
+  'quality.updated': 'text-amber-400',
+  'repair.plan': 'text-amber-400',
+  'repair.failed': 'text-red-400',
 };
 
 type RouterOutputs = inferRouterOutputs<RootRouter>;
@@ -75,8 +135,49 @@ function eventDescription(event: {
       return `${workstationPrefix}Review ${event.new_value ?? 'completed'}`;
     case 'memo_sent':
       return `${workstationPrefix}Memo sent`;
-    default:
-      return `${workstationPrefix}${event.event_type}`;
+    default: {
+      // Engine journal events carry their structured payload in metadata.payload.
+      const payload = (event.metadata?.payload ?? {}) as Record<string, unknown>;
+      const text = (key: string): string | undefined => {
+        const value = payload[key];
+        return typeof value === 'string' || typeof value === 'number' ? String(value) : undefined;
+      };
+      switch (event.event_type) {
+        case 'mission.state_changed':
+          return `${workstationPrefix}Mission → ${text('state') ?? 'state changed'}`;
+        case 'ticket.verification_changed':
+          return `${workstationPrefix}Verification → ${text('verification_state') ?? text('execution_state') ?? 'changed'}`;
+        case 'revision.created':
+          return `${workstationPrefix}Revision ${text('revision_no') ?? ''} created`.trim();
+        case 'revision.reviewed':
+          return `${workstationPrefix}Revision reviewed: ${text('verdict') ?? 'verdict recorded'}`;
+        case 'revision.rejected':
+          return `${workstationPrefix}Revision rejected`;
+        case 'revision.verified':
+          return `${workstationPrefix}Revision verified`;
+        case 'mission.replanned':
+          return `${workstationPrefix}Mission replanned${text('reason') ? `: ${text('reason')}` : ''}`;
+        case 'mission.verified':
+        case 'mission.verified_10_10':
+          return `${workstationPrefix}Mission verified`;
+        case 'mission.blocked':
+          return `${workstationPrefix}Mission blocked${text('blocked_reason') ? `: ${text('blocked_reason')}` : ''}`;
+        case 'job.enqueued':
+          return `${workstationPrefix}Review job enqueued`;
+        case 'job.requeued':
+          return `${workstationPrefix}Review job requeued${text('reason') ? `: ${text('reason')}` : ''}`;
+        case 'job.completed':
+          return `${workstationPrefix}Review job ${text('state') ?? 'completed'}`;
+        case 'report.ready':
+          return `${workstationPrefix}Review report ready`;
+        case 'evidence.captured':
+          return `${workstationPrefix}Evidence captured${text('kind') ? ` (${text('kind')})` : ''}`;
+        case 'repair.failed':
+          return `${workstationPrefix}Repair failed${text('error') ? `: ${text('error')}` : ''}`;
+        default:
+          return `${workstationPrefix}${event.event_type}`;
+      }
+    }
   }
 }
 

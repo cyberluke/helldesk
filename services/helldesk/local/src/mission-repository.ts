@@ -2,6 +2,7 @@ import type { Db } from './db';
 import { generateId, now } from './ids';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { normalizeReviewControls, parseReviewControls, type ReviewControls } from './review-controls';
 
 /**
  * Mission / Ticket / Revision durable repository (Ender long-horizon loop).
@@ -25,7 +26,7 @@ export type MissionState =
   | 'ACTIVE' | 'PLANNING' | 'MUTATING' | 'CAPTURING_EVIDENCE'
   | 'VERIFYING' | 'REPLANNING' | 'BLOCKED_EXTERNAL' | 'VERIFIED_10_10' | 'CANCELLED';
 
-export type ExecutionState = 'OPEN' | 'READY' | 'RUNNING' | 'FAILED' | 'CLOSED' | 'BLOCKED';
+export type ExecutionState = 'OPEN' | 'READY' | 'RUNNING' | 'AWAITING_ACCEPTANCE' | 'FAILED' | 'CLOSED' | 'BLOCKED';
 export type VerificationState = 'UNVERIFIED' | 'VERIFYING' | 'PENDING_VERIFY' | 'REJECTED' | 'SUPERSEDED' | 'VERIFIED_10_10';
 export type RevisionState =
   | 'PLANNED' | 'MUTATING' | 'EVIDENCE_CAPTURED' | 'VERIFYING' | 'PENDING_VERIFY'
@@ -42,12 +43,222 @@ export interface MissionRow {
   policy_version: string;
   task_gates_json?: string;
   engine_matrix_json?: string;
+  /** Per-task review policy (migration 0017): reviewerA/reviewerB/excellenceGovernor/agent gates. */
+  controls_json?: string;
   created_at: string;
   updated_at: string;
   verified_at: string | null;
   blocked_reason: string | null;
   blocked_details: string | null;
   cancelled_at: string | null;
+  /** Consecutive no-delta / scratch-only replan count (see migration 0010). */
+  replan_streak?: number;
+  /** Operator-chosen board column (migration 0014); display intent, never engine state. */
+  operator_status?: string | null;
+  operator_status_at?: string | null;
+  /** Bounded auto-retry bookkeeping (migration 0015). */
+  auto_retry_count?: number;
+  next_retry_at?: string | null;
+  /** Human acceptance gate (migration 0018): machine verification is not acceptance. */
+  human_acceptance?: HumanAcceptanceDecision | null;
+  human_acceptance_note?: string | null;
+  human_accepted_at?: string | null;
+  human_accepted_by?: string | null;
+}
+
+export type HumanAcceptanceDecision = 'accepted' | 'changes_requested';
+
+export interface MissionAcceptanceEvent {
+  event_id: string;
+  mission_id: string;
+  decision: HumanAcceptanceDecision;
+  note: string | null;
+  actor: string | null;
+  created_at: string;
+}
+
+/**
+ * Schedule a BOUNDED auto-retry for a transient BLOCKED_EXTERNAL mission.
+ * Pathological loop exhaustion and budget breaches are deliberately NOT retried
+ * (they need an operator decision); everything else gets 5/10/20-minute backoff,
+ * capped at 3 attempts.
+ */
+export function scheduleBlockedRetry(d: Db, missionId: string, reason: string): void {
+  const m = getMission(d, missionId);
+  if (!m) return;
+  const retryable = !/replan-exhausted|budget:|no-workspace|dependency|cycle/i.test(reason);
+  const count = m.auto_retry_count ?? 0;
+  if (!retryable || count >= 3) {
+    d.db.query(`UPDATE autonomy_missions SET next_retry_at=NULL WHERE mission_id=?`).run(missionId);
+    return;
+  }
+  const delayMs = Math.min(5 * 60_000 * 2 ** count, 60 * 60_000);
+  d.db
+    .query(`UPDATE autonomy_missions SET auto_retry_count=?, next_retry_at=? WHERE mission_id=?`)
+    .run(count + 1, new Date(Date.now() + delayMs).toISOString(), missionId);
+}
+
+/**
+ * Resume a blocked/stuck mission: ACTIVE + reconcile non-terminal revisions to
+ * PLANNED. Shared by the operator's /resume and the bounded auto-retry sweep.
+ */
+export function resumeMissionState(d: Db, missionId: string): boolean {
+  const m = getMission(d, missionId);
+  if (!m) return false;
+  const now = new Date().toISOString();
+  d.tx(() => {
+    d.db
+      .query(
+        `UPDATE autonomy_missions
+            SET state='ACTIVE', blocked_reason=NULL, blocked_details=NULL,
+                current_revision_id=NULL, next_retry_at=NULL, updated_at=?
+          WHERE mission_id=?`
+      )
+      .run(now, missionId);
+    for (const ticket of listTickets(d, missionId)) {
+      if (!ticket.active_revision_id) continue;
+      const rev = getRevision(d, ticket.active_revision_id);
+      if (rev && ['MUTATING', 'EVIDENCE_CAPTURED', 'VERIFYING', 'BLOCKED'].includes(rev.state)) {
+        updateRevision(d, rev.revision_id, { state: 'PLANNED' });
+      }
+    }
+  });
+  return true;
+}
+
+/** Record (or clear) the operator's chosen board column. Engine state is untouched. */
+export function setMissionOperatorStatus(d: Db, missionId: string, status: string | null): void {
+  d.db
+    .query(`UPDATE autonomy_missions SET operator_status=?, operator_status_at=? WHERE mission_id=?`)
+    .run(status, new Date().toISOString(), missionId);
+}
+
+/** True while a machine-verified mission is still waiting for the human decision. */
+export function isAwaitingHumanAcceptance(mission: Pick<MissionRow, 'state' | 'human_acceptance'>): boolean {
+  return mission.state === 'VERIFIED_10_10' && mission.human_acceptance !== 'accepted';
+}
+
+/** A re-opened / re-verified mission must ask the human again. */
+export function clearHumanAcceptance(d: Db, missionId: string): void {
+  d.db
+    .query(
+      `UPDATE autonomy_missions
+          SET human_acceptance=NULL, human_acceptance_note=NULL,
+              human_accepted_at=NULL, human_accepted_by=NULL
+        WHERE mission_id=?`
+    )
+    .run(missionId);
+}
+
+export function listMissionAcceptanceEvents(d: Db, missionId: string): MissionAcceptanceEvent[] {
+  return d.db
+    .query<MissionAcceptanceEvent, [string]>(
+      `SELECT event_id, mission_id, decision, note, actor, created_at
+         FROM mission_acceptance_events WHERE mission_id=? ORDER BY created_at ASC, rowid ASC`
+    )
+    .all(missionId);
+}
+
+/**
+ * The explicit HITL acceptance gate. Machine VERIFIED_10_10 is NOT acceptance:
+ *
+ *   accepted          → record the human decision and close the verified tickets.
+ *   changes_requested → record the decision, reopen the mission with a
+ *                       first-class follow-up ticket carrying the operator note.
+ *                       The previously verified revision stays immutable/audited.
+ */
+export function recordMissionAcceptance(
+  d: Db,
+  input: { missionId: string; decision: HumanAcceptanceDecision; note?: string | null; actor?: string | null },
+): { event: MissionAcceptanceEvent; mission: MissionRow } {
+  const mission = getMission(d, input.missionId);
+  if (!mission) throw new Error(`mission not found: ${input.missionId}`);
+  if (input.decision === 'accepted' && mission.human_acceptance === 'accepted') {
+    const previous = listMissionAcceptanceEvents(d, input.missionId).filter((e) => e.decision === 'accepted').at(-1);
+    if (previous) return { event: previous, mission };
+  }
+  if (mission.state !== 'VERIFIED_10_10') {
+    throw new Error(`mission is ${mission.state}, not awaiting human acceptance`);
+  }
+  const note = input.note?.trim() || null;
+  if (input.decision === 'changes_requested' && !note) {
+    throw new Error('a change request requires a note');
+  }
+  const event: MissionAcceptanceEvent = {
+    event_id: generateId('acceptance'),
+    mission_id: input.missionId,
+    decision: input.decision,
+    note,
+    actor: input.actor?.trim() || null,
+    created_at: now(),
+  };
+  d.tx((t) => {
+    t.query(
+      `INSERT INTO mission_acceptance_events (event_id, mission_id, decision, note, actor, created_at)
+       VALUES (?,?,?,?,?,?)`
+    ).run(event.event_id, event.mission_id, event.decision, event.note, event.actor, event.created_at);
+    if (input.decision === 'accepted') {
+      t.query(
+        `UPDATE autonomy_missions
+            SET human_acceptance='accepted', human_acceptance_note=?, human_accepted_at=?, human_accepted_by=?, updated_at=?
+          WHERE mission_id=?`
+      ).run(note, event.created_at, event.actor, event.created_at, input.missionId);
+      t.query(
+        `UPDATE mission_tickets
+            SET execution_state='CLOSED', updated_at=?
+          WHERE mission_id=? AND verification_state='VERIFIED_10_10'`
+      ).run(event.created_at, input.missionId);
+    } else {
+      t.query(
+        `UPDATE autonomy_missions
+            SET human_acceptance='changes_requested', human_acceptance_note=?, human_accepted_at=?, human_accepted_by=?,
+                state='ACTIVE', verified_at=NULL, updated_at=?
+          WHERE mission_id=?`
+      ).run(note, event.created_at, event.actor, event.created_at, input.missionId);
+    }
+  });
+  if (input.decision === 'accepted') {
+    emitMissionEvent(d, 'mission.human_accepted', {
+      mission_id: input.missionId,
+      actor: event.actor,
+      note,
+      accepted_at: event.created_at,
+    });
+  } else {
+    // A change request is real follow-up work, not a silent note: it becomes a
+    // first-class ticket the mission controller will plan and implement.
+    emitMissionEvent(d, 'mission.changes_requested', {
+      mission_id: input.missionId,
+      actor: event.actor,
+      note,
+      requested_at: event.created_at,
+    });
+    updateMissionState(d, input.missionId, 'ACTIVE');
+    addTicket(d, input.missionId, {
+      title: 'Operator change request',
+      objective: note ?? 'Operator requested changes',
+      priority: 100,
+    });
+  }
+  return { event, mission: getMission(d, input.missionId)! };
+}
+
+/** Read a mission's persisted consecutive no-delta replan streak. */
+export function getReplanStreak(d: Db, missionId: string): number {
+  const row = (d.db.query<{ replan_streak?: number | null }, [string]>('SELECT replan_streak FROM autonomy_missions WHERE mission_id=?').get(missionId) ?? {}) as { replan_streak?: number | null };
+  return row.replan_streak ?? 0;
+}
+
+/** Increment the no-delta replan streak (bounded/positive). */
+export function bumpReplanStreak(d: Db, missionId: string): number {
+  const next = getReplanStreak(d, missionId) + 1;
+  d.db.query<unknown, [number, string]>('UPDATE autonomy_missions SET replan_streak=? WHERE mission_id=?').run(next, missionId);
+  return next;
+}
+
+/** Reset the no-delta streak to 0 after a real delta / terminal verdict. */
+export function resetReplanStreak(d: Db, missionId: string): void {
+  d.db.query<unknown, [string]>('UPDATE autonomy_missions SET replan_streak=0 WHERE mission_id=?').run(missionId);
 }
 
 export interface TicketRow {
@@ -61,6 +272,46 @@ export interface TicketRow {
   priority: number;
   created_at: string;
   updated_at: string;
+  /** Operator dispatch override: the chosen agent (e.g. Toast) responsible for
+   *  this ticket. NULL = unassigned (mission engine matrix auto-dispatch). */
+  assignee_agent_id?: string | null;
+  assigned_at?: string | null;
+  assigned_by?: string | null;
+  /** LLM/operator T-shirt estimate (migration 0020). Null = unsized. */
+  story_points?: number | null;
+  tshirt_size?: string | null;
+  size_confidence?: string | null;
+  size_rationale?: string | null;
+  size_model?: string | null;
+  sized_at?: string | null;
+  sizing_state?: string | null;
+}
+
+/** Record an operator dispatch override on a mission ticket. Returns the ticket. */
+export function assignTicketToAgent(
+  d: Db,
+  ticketId: string,
+  agentId: string,
+  opts?: { by?: string },
+): TicketRow | null {
+  const ticket = getTicket(d, ticketId);
+  if (!ticket) return null;
+  const now = new Date().toISOString();
+  d.db.query<unknown, [string | null, string, string | null, string, string]>(
+    'UPDATE mission_tickets SET assignee_agent_id=?, assigned_at=COALESCE(assigned_at,?), assigned_by=?, updated_at=? WHERE ticket_id=?'
+  ).run(agentId, now, opts?.by ?? 'operator', now, ticketId);
+  // return the refreshed row so callers see the assignment without a re-fetch.
+  return { ...ticket, assignee_agent_id: agentId, assigned_at: now, assigned_by: opts?.by ?? 'operator' };
+}
+
+/** Read a ticket's assignment (assignee + when/by). Empty when unassigned. */
+export function getTicketAssignment(d: Db, ticketId: string): { assignee_agent_id?: string | null; assigned_at?: string | null; assigned_by?: string | null } {
+  const row = getTicket(d, ticketId);
+  return {
+    assignee_agent_id: row?.assignee_agent_id ?? null,
+    assigned_at: row?.assigned_at ?? null,
+    assigned_by: row?.assigned_by ?? null,
+  };
 }
 
 export interface RevisionRow {
@@ -141,9 +392,21 @@ export function emitMissionEvent(
  * the mission objective. A retry never creates a second mutation mission. */
 export function createMissionRequest(d: Db, input: {
   workspaceId: string; objective: string; taskGates: string[]; idempotencyKey?: string;
-  tickets: Array<{ title: string; objective: string; dependsOn: string[] }>;
+  tickets: Array<{
+    title: string;
+    objective: string;
+    dependsOn: string[];
+    storyPoints?: number | null;
+    tshirtSize?: string | null;
+    sizeConfidence?: string | null;
+    sizeRationale?: string | null;
+    sizeModel?: string | null;
+    sizingState?: string | null;
+  }>;
   /** Provider-agnostic per-stage engine selection (serialized to engine_matrix_json). */
   engineMatrix?: Record<string, unknown>;
+  /** Per-task review policy (serialized to controls_json). Mutable live. */
+  controls?: ReviewControls;
 }): { conflict: true } | { conflict: false; missionId: string; ticketIds: string[]; reused: boolean } {
   const requestHash = createHash('sha256').update(JSON.stringify({
     workspaceId: input.workspaceId, objective: input.objective,
@@ -156,15 +419,28 @@ export function createMissionRequest(d: Db, input: {
       ).get(input.idempotencyKey);
       if (previous) {
         if (previous.request_hash !== requestHash) return { conflict: true };
+        // Controls are live operator policy, not part of the immutable request
+        // identity. Re-applying the same request updates them on the existing mission.
+        if (input.controls) setMissionReviewControls(d, previous.mission_id, input.controls);
         return { conflict: false, missionId: previous.mission_id, ticketIds: listTickets(d, previous.mission_id).map(ticket => ticket.ticket_id), reused: true };
       }
     }
     const mission = createMission(d, {
       workspace_id: input.workspaceId, objective: input.objective, taskGates: input.taskGates,
-      engineMatrix: input.engineMatrix,
+      engineMatrix: input.engineMatrix, controls: input.controls,
     });
     if (input.idempotencyKey) db.query('UPDATE autonomy_missions SET idempotency_key=?, request_hash=? WHERE mission_id=?').run(input.idempotencyKey, requestHash, mission.mission_id);
-    const ticketIds = input.tickets.map(ticket => addTicket(d, mission.mission_id, { title: ticket.title, objective: ticket.objective, depends_on: ticket.dependsOn }).ticket_id);
+    const ticketIds = input.tickets.map(ticket => addTicket(d, mission.mission_id, {
+      title: ticket.title,
+      objective: ticket.objective,
+      depends_on: ticket.dependsOn,
+      storyPoints: ticket.storyPoints,
+      tshirtSize: ticket.tshirtSize,
+      sizeConfidence: ticket.sizeConfidence,
+      sizeRationale: ticket.sizeRationale,
+      sizeModel: ticket.sizeModel,
+      sizingState: ticket.sizingState,
+    }).ticket_id);
     return { conflict: false, missionId: mission.mission_id, ticketIds, reused: false };
   });
 }
@@ -174,6 +450,7 @@ export function createMission(
   input: {
     workspace_id: string; objective: string; policy_version?: string; taskGates?: string[];
     engineMatrix?: Record<string, unknown>;
+    controls?: ReviewControls;
   },
 ): MissionRow {
   const mission_id = generateId('mis');
@@ -188,6 +465,7 @@ export function createMission(
     policy_version: input.policy_version ?? 'ender-1',
     task_gates_json: JSON.stringify(input.taskGates || []),
     engine_matrix_json: JSON.stringify(input.engineMatrix ?? {}),
+    controls_json: JSON.stringify(normalizeReviewControls(input.controls)),
     created_at: ts,
     updated_at: ts,
     verified_at: null,
@@ -198,12 +476,60 @@ export function createMission(
   d.tx((t) => {
     t.query(
       /* sql */ `INSERT INTO autonomy_missions
-       (mission_id, workspace_id, objective, state, policy_version, created_at, updated_at, task_gates_json, engine_matrix_json)
-       VALUES (?,?,?,?,?,?,?,?,?)`
-    ).run(mission.mission_id, mission.workspace_id, mission.objective, mission.state, mission.policy_version, mission.created_at, mission.updated_at, mission.task_gates_json || '[]', mission.engine_matrix_json || '{}');
+       (mission_id, workspace_id, objective, state, policy_version, created_at, updated_at, task_gates_json, engine_matrix_json, controls_json)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`
+    ).run(mission.mission_id, mission.workspace_id, mission.objective, mission.state, mission.policy_version, mission.created_at, mission.updated_at, mission.task_gates_json || '[]', mission.engine_matrix_json || '{}', mission.controls_json || '{}');
   });
   emitMissionEvent(d, 'mission.created', { mission_id, objective: input.objective });
   return mission;
+}
+
+/** The mission's persisted review policy (defaults = all stages enabled). */
+export function getMissionReviewControls(d: Db, missionId: string): ReviewControls {
+  const row = d.db
+    .query<{ controls_json: string | null }, [string]>('SELECT controls_json FROM autonomy_missions WHERE mission_id=?')
+    .get(missionId);
+  return parseReviewControls(row?.controls_json);
+}
+
+/**
+ * Persist a new review policy and push it onto any not-yet-decided review job for
+ * the mission's active revisions. A running A/B attempt is not interrupted (the
+ * policy applies to the next review boundary); a QUEUED / retryable job picks it
+ * up before its stages start.
+ */
+export function setMissionReviewControls(d: Db, missionId: string, controls: ReviewControls): ReviewControls {
+  const merged = normalizeReviewControls(controls);
+  d.db
+    .query('UPDATE autonomy_missions SET controls_json=?, updated_at=? WHERE mission_id=?')
+    .run(JSON.stringify(merged), now(), missionId);
+  syncControlsToOpenReviewJobs(d, missionId, merged);
+  emitMissionEvent(d, 'mission.controls_updated', { mission_id: missionId, controls: merged });
+  return merged;
+}
+
+/** Propagate live controls to open review jobs linked to this mission's revisions. */
+function syncControlsToOpenReviewJobs(d: Db, missionId: string, controls: ReviewControls): void {
+  try {
+    const rows = d.db
+      .query<{ job_id: string; meta: string | null }, [string]>(
+        `SELECT DISTINCT j.job_id, j.meta
+           FROM review_jobs j
+           JOIN ticket_revisions r ON r.review_job_id = j.job_id
+           JOIN mission_tickets t ON t.active_revision_id = r.revision_id
+          WHERE t.mission_id = ?
+            AND j.state IN ('QUEUED','REVIEWING_A_B','ADJUDICATING','INCONCLUSIVE')`
+      )
+      .all(missionId);
+    for (const row of rows) {
+      let meta: Record<string, unknown> = {};
+      try { meta = row.meta ? (JSON.parse(row.meta) as Record<string, unknown>) : {}; } catch { meta = {}; }
+      meta.controls = controls;
+      d.db.query('UPDATE review_jobs SET meta=?, updated_at=? WHERE job_id=?').run(JSON.stringify(meta), now(), row.job_id);
+    }
+  } catch {
+    /* policy propagation is best effort; the hook re-reads the mission at review time */
+  }
 }
 
 /**
@@ -257,7 +583,7 @@ export function diagnoseFailure(failureSignature: string | null | undefined, emp
   if (/timeout|server.*start/i.test(errors + findings)) return { kind: 'server-boot-timeout', label: `runtime server failed to start in time — ${(errors + ' ' + findings).trim()}` };
   if (/ENOENT|spawn.*failed|not found/i.test(errors + findings)) return { kind: 'agent-binary-missing', label: `agent binary missing/unrunnable — ${(errors + ' ' + findings).trim()}` };
   if (/blocked/i.test(errors)) return { kind: 'blocked', label: `blocked by external condition — ${errors.slice(0, 200)}` };
-  if (/transient|socket|ECONN/i.test(errors + findings)) return { kind: 'transient', label: `transient/network — ${(errors + ' ' + findings).trim()}` };
+  if (/transient|socket|ECONN|provider_unreachable|temporarily unavailable/i.test(errors + findings)) return { kind: 'transient', label: `transient/network — ${(errors + ' ' + findings).trim()}` };
   if (findings && findings.length > 2) return { kind: 'review-reject', label: `review rejected: ${findings.slice(0, 200)}` };
   if (gates && gates.length > 2) return { kind: 'quality-gate-fail', label: `quality gate failed: ${gates.slice(0, 200)}` };
   return { kind: 'unknown', label: sig };
@@ -307,7 +633,18 @@ export function updateMissionState(
 export function addTicket(
   d: Db,
   mission_id: string,
-  input: { title: string; objective?: string; priority?: number; depends_on?: string[] },
+  input: {
+    title: string;
+    objective?: string;
+    priority?: number;
+    depends_on?: string[];
+    storyPoints?: number | null;
+    tshirtSize?: string | null;
+    sizeConfidence?: string | null;
+    sizeRationale?: string | null;
+    sizeModel?: string | null;
+    sizingState?: string | null;
+  },
 ): TicketRow {
   const ticket_id = generateId('ticket');
   const ts = now();
@@ -322,13 +659,26 @@ export function addTicket(
     priority: input.priority ?? 0,
     created_at: ts,
     updated_at: ts,
+    story_points: input.storyPoints ?? null,
+    tshirt_size: input.tshirtSize ?? null,
+    size_confidence: input.sizeConfidence ?? null,
+    size_rationale: input.sizeRationale ?? null,
+    size_model: input.sizeModel ?? null,
+    sized_at: input.storyPoints != null ? ts : null,
+    sizing_state: input.sizingState ?? (input.storyPoints != null ? 'sized' : 'unsized'),
   };
   d.tx((t) => {
     t.query(
       `INSERT INTO mission_tickets
-       (ticket_id, mission_id, title, objective, execution_state, verification_state, priority, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?)`
-    ).run(ticket.ticket_id, ticket.mission_id, ticket.title, ticket.objective, ticket.execution_state, ticket.verification_state, ticket.priority, ticket.created_at, ticket.updated_at);
+       (ticket_id, mission_id, title, objective, execution_state, verification_state, priority, created_at, updated_at,
+        story_points, tshirt_size, size_confidence, size_rationale, size_model, sized_at, sizing_state)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(
+      ticket.ticket_id, ticket.mission_id, ticket.title, ticket.objective, ticket.execution_state, ticket.verification_state,
+      ticket.priority, ticket.created_at, ticket.updated_at,
+      ticket.story_points ?? null, ticket.tshirt_size ?? null, ticket.size_confidence ?? null,
+      ticket.size_rationale ?? null, ticket.size_model ?? null, ticket.sized_at ?? null, ticket.sizing_state ?? 'unsized',
+    );
     for (const dep of input.depends_on ?? []) {
       t.query(
         `INSERT OR IGNORE INTO ticket_dependencies (ticket_id, depends_on_ticket_id, dependency_type) VALUES (?,?,?)`
@@ -348,6 +698,64 @@ export function listTickets(d: Db, mission_id: string, orderByPriority = true): 
     .query<TicketRow, [string]>(`SELECT * FROM mission_tickets WHERE mission_id=? ORDER BY priority DESC, created_at ASC`)
     .all(mission_id) as TicketRow[];
   return orderByPriority ? rows : rows.reverse();
+}
+
+/** Operator/LLM size update. Missing fields keep the existing value. */
+export function updateTicketSize(
+  d: Db,
+  ticketId: string,
+  size: {
+    tshirt?: string | null;
+    storyPoints?: number | null;
+    confidence?: string | null;
+    rationale?: string | null;
+    model?: string | null;
+    state?: string | null;
+  },
+): TicketRow | null {
+  const ticket = getTicket(d, ticketId);
+  if (!ticket) return null;
+  const ts = now();
+  const storyPoints = size.storyPoints !== undefined ? size.storyPoints : ticket.story_points ?? null;
+  const tshirt = size.tshirt !== undefined ? size.tshirt : ticket.tshirt_size ?? null;
+  const sizingState = size.state ?? (storyPoints != null ? 'manual' : 'unsized');
+  d.db
+    .query(
+      `UPDATE mission_tickets
+          SET story_points=?, tshirt_size=?, size_confidence=?, size_rationale=?, size_model=?,
+              sized_at=?, sizing_state=?, updated_at=?
+        WHERE ticket_id=?`
+    )
+    .run(
+      storyPoints,
+      tshirt,
+      size.confidence !== undefined ? size.confidence : ticket.size_confidence ?? null,
+      size.rationale !== undefined ? size.rationale : ticket.size_rationale ?? null,
+      size.model !== undefined ? size.model : ticket.size_model ?? null,
+      storyPoints != null ? ts : null,
+      sizingState,
+      ts,
+      ticketId,
+    );
+  emitMissionEvent(d, 'ticket.sized', {
+    mission_id: ticket.mission_id,
+    ticket_id: ticketId,
+    story_points: storyPoints,
+    tshirt_size: tshirt,
+    sizing_state: sizingState,
+  });
+  return getTicket(d, ticketId) ?? null;
+}
+
+/** Backfill input: tickets that still have no point estimate. */
+export function listUnsizedTickets(d: Db, limit = 20): TicketRow[] {
+  return d.db
+    .query<TicketRow, [number]>(
+      `SELECT * FROM mission_tickets
+        WHERE story_points IS NULL OR sizing_state IN ('unsized','pending')
+        ORDER BY created_at ASC LIMIT ?`
+    )
+    .all(limit) as TicketRow[];
 }
 
 export function getDependencies(d: Db, ticket_id: string): string[] {

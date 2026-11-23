@@ -1,1 +1,53 @@
-{"version":1,"daemon":{"bind":"127.0.0.1","port":4790,"debounceMs":4000,"production":true,"maxConcurrentJobs":2,"maxReviewersPerJob":2,"maxAttempts":3,"leaseSeconds":120,"requestTimeoutMs":120000,"retryBaseMs":2000,"retryMaxMs":60000,"breakerThreshold":3,"breakerCooldownMs":30000,"maxSnapshotBytes":67108864,"retentionDays":30},"policy":{"runner":"kilo","productionCancelFake":true,"providers":{"litellm-edge":{"kind":"openai-compatible","baseURL":"http://localhost:4000/v1","apiKey":"","modelID":"differential_sseproxy"}},"reviewerModelA":{"providerID":"litellm-edge","modelID":"differential_sseproxy"},"reviewerModelB":{"providerID":"litellm-edge","modelID":"differential_sseproxy"},"adjudicatorModel":{"providerID":"litellm-edge","modelID":"differential_sseproxy"},"strictCoverage":true},"autonomy":{"enabled":false,"mutationRunner":"kilo","kiloBin":"","providerID":"litellm-edge","modelID":"differential_sseproxy","baseURL":"http://localhost:4000/v1","apiKey":"","taskGates":[]},"workspaces":[{"path":"C:\\src\\kilo-helldesk-local","enabled":true,"include":[],"exclude":["**/node_modules/**","**/.git/**","**/dist/**","**/build/**","**/.next/**","**/coverage/**","**/.kilo/**","**/*.sqlite*"]}]}
+{
+  "version": 1,
+  "daemon": {
+    "bind": "127.0.0.1",
+    "port": 4790,
+    "debounceMs": 4000,
+    "production": true,
+    "maxConcurrentJobs": 2,
+    "maxReviewersPerJob": 2,
+    "maxAttempts": 3,
+    "leaseSeconds": 120,
+    "requestTimeoutMs": 120000,
+    "retryBaseMs": 2000,
+    "retryMaxMs": 60000,
+    "breakerThreshold": 3,
+    "breakerCooldownMs": 30000,
+    "maxSnapshotBytes": 67108864,
+    "retentionDays": 30
+  },
+  "policy": {
+    "runner": "kilo",
+    "productionCancelFake": true,
+    "kiloServerBin": "",
+    "strictCoverage": true
+  },
+  "autonomy": {
+    "enabled": false,
+    "mutationRunner": "kilo",
+    "kiloBin": "",
+    "providerID": "",
+    "modelID": "",
+    "baseURL": "",
+    "apiKey": "",
+    "taskGates": []
+  },
+  "workspaces": [
+    {
+      "path": "C:/path/to/your/repo",
+      "enabled": true,
+      "include": [],
+      "exclude": [
+        "**/node_modules/**",
+        "**/.git/**",
+        "**/dist/**",
+        "**/build/**",
+        "**/.next/**",
+        "**/coverage/**",
+        "**/.kilo/**",
+        "**/*.sqlite*"
+      ]
+    }
+  ]
+}

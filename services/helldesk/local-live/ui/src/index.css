@@ -7,9 +7,9 @@
   --line: rgba(140, 155, 190, 0.14);
   --fg: #e8edf7;
   --muted: #8ea0bd;
-  --accent: #6ee7b7;      /* emerald frontDesk */
+  --accent: #a78bfa;      /* emerald frontDesk */
   --accent2: #5eead4;     /* teal qualityAssurance */
-  --accent3: #fbbf24;     /* amber soul */
+  --accent3: #67e8f9;     /* amber soul */
   --ok: #34d399;
   --warn: #fbbf24;
   --bad: #f87171;
@@ -20,7 +20,8 @@
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 * { box-sizing: border-box; }
-html, body, #root { margin: 0; min-height: 100vh; }
+html, body, #root { margin: 0; height: 100%; min-height: 0; }
+body { overflow: hidden; }
 body {
   font: 14px/1.55 var(--font);
   color: var(--fg);
@@ -84,7 +85,10 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .field label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
 
 /* Cards / grids */
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 14px; }
+/* Native legacy dashboard grids. Keep this OUT of the bare `.grid` name: the
+   federated Tailwind pages use `.grid` + `grid-cols-*`, and a global auto-fill
+   rule here silently overrode their layout (e.g. a 3-column commit console). */
+.native-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 14px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; box-shadow: var(--shadow); }
 .card h3 { margin: 0 0 4px; font-size: 14px; }
 .card .muted { font-size: 12px; margin: 0 0 10px; }
@@ -160,6 +164,12 @@ td { padding: 9px 10px; border-bottom: 1px solid rgba(140, 155, 190, 0.07); }
 .operator-title-dot { color: var(--op-mint); }
 .operator-hero { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 32px; }
 .operator-hero p { margin: 14px 0 0; color: var(--op-muted); font-size: 15px; }
+/* The active task, in human words, at the top of the console. The raw mis_…
+   handle lives in the tooltip/title — the header itself never shows it. */
+.operator-hero .operator-hero-task { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 0; font-size: 13px; color: var(--op-ink); }
+.operator-hero-task .operator-eyebrow { margin: 0; }
+.operator-hero-task strong { max-width: min(92ch, 74vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; letter-spacing: -.01em; }
+.operator-mission-state { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; color: var(--op-mint); border: 1px solid #b7f4cf30; background: #b7f4cf14; border-radius: 999px; padding: 1px 8px; }
 .operator-connection { display: flex; align-items: center; gap: 9px; white-space: nowrap; padding: 9px 13px; border: 1px solid var(--op-edge); border-radius: 99px; color: var(--op-muted); font-size: 12px; background: #12191c; }
 .operator-connection > span { width: 6px; height: 6px; border-radius: 50%; background: #efc37b; }
 .operator-connection.online > span { background: var(--op-mint); box-shadow: 0 0 0 4px #b7f4cf0e; }
@@ -167,6 +177,10 @@ td { padding: 9px 10px; border-bottom: 1px solid rgba(140, 155, 190, 0.07); }
 .operator-crew { padding: 20px 14px; background: linear-gradient(160deg, #182128, #10151b); border: 1px solid var(--op-edge); border-radius: 20px; }
 .operator-section-heading { display: flex; gap: 10px; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 600; margin-bottom: 18px; }
 .operator-crew .operator-section-heading { padding: 0 8px; }
+.operator-crew .operator-workstation-filter { width: calc(100% - 16px); margin: 0 8px 12px; padding: 7px 10px; border: 1px solid var(--op-edge); border-radius: 9px; background: #0d1217; color: var(--op-ink); font-size: 11px; }
+.operator-agent-working { display: flex; align-items: center; gap: 9px; margin: 0 18px 12px; padding: 9px 12px; border: 1px solid #b7f4cf1f; border-radius: 10px; background: #b7f4cf08; color: var(--op-muted); font-size: 11px; line-height: 1.5; }
+.operator-working-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #b7f4cf; box-shadow: 0 0 0 3px #b7f4cf1a; animation: operator-pulse 1.8s ease-in-out infinite; }
+@keyframes operator-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
 .operator-chip { font: 10px/1.5 var(--mono); padding: 3px 7px; border: 1px solid var(--op-edge); border-radius: 6px; color: var(--op-muted); white-space: nowrap; }
 .operator-person { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; border: 1px solid transparent; border-radius: 12px; padding: 12px 10px; background: transparent; color: var(--op-ink); margin: 4px 0; }
 .operator-person:hover { background: #ffffff06; }
@@ -241,3 +255,126 @@ td { padding: 9px 10px; border-bottom: 1px solid rgba(140, 155, 190, 0.07); }
 @media (max-width: 1100px) { .operator-layout { grid-template-columns: 196px minmax(0, 1fr); gap: 14px; } .operator-conversation-heading { align-items: flex-start; flex-direction: column; } }
 @media (max-width: 760px) { .operator-layout { grid-template-columns: minmax(0, 1fr); } .operator-hero { align-items: flex-start; flex-direction: column; gap: 14px; } .operator-crew { display: flex; gap: 8px; overflow: auto; padding: 10px; } .operator-crew .operator-section-heading, .operator-contract { display: none; } .operator-person { width: auto; min-width: 160px; flex: none; } .operator-conversation-heading, .operator-steering { padding: 18px; } .operator-stream { padding: 4px 16px; } .operator-compose { margin: 12px; } .operator-steer-fields { grid-template-columns: 1fr; } .operator-compose-footer { align-items: flex-start; } .operator-compose-footer > span { max-width: 120px; } .operator-page .ts-field { flex-wrap: wrap; } }
 @media (prefers-reduced-motion: reduce) { .operator-page, .operator-message { animation: none; } .operator-page *, .operator-page *::before, .operator-page *::after { transition: none !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; } }
+
+/* ── Operations Console (SOTA observability) ──────────────────────────────── */
+.observability .kpi { border-left: 3px solid var(--line); transition: border-color .2s ease; }
+.observability .kpi:hover { border-left-color: var(--accent); }
+.observability .card { backdrop-filter: blur(2px); }
+.observability .mission-list > div { transition: background .15s ease, transform .15s ease; }
+.observability .mission-list > div:hover { background: rgba(110,231,183,.05); transform: translateX(2px); }
+.observability .log > div:hover { background: rgba(110,231,183,.04); }
+
+
+/* ── Unified desktop shell ───────────────────────────────────────────────── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(167, 139, 250, .28) transparent;
+}
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(167,139,250,.48), rgba(94,234,212,.40)) padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(167,139,250,.72), rgba(94,234,212,.62)) padding-box;
+}
+
+/* Operator is a desktop pane: the document never scrolls; only the crew and
+   conversation streams do. This keeps the composer fixed like Discord/Slack. */
+.operator-console {
+  height: 100%;
+  max-width: none;
+  margin: 0;
+  padding: clamp(18px, 2vw, 36px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background:
+    radial-gradient(70% 60% at 8% -10%, rgba(167,139,250,.12), transparent 58%),
+    radial-gradient(65% 55% at 100% 8%, rgba(94,234,212,.09), transparent 60%);
+}
+.operator-console .operator-hero {
+  flex: 0 0 auto;
+  margin-bottom: clamp(16px, 1.4vw, 24px);
+}
+/* List-style console pages (ExcellenceGovernor) have no inner streams. The
+   console root is a fixed pane with `overflow: hidden`, so the body itself
+   must own the vertical scroll — otherwise cards below the fold are clipped
+   and no scrollbar appears. */
+.operator-console .operator-console-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.operator-console .operator-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  align-items: stretch;
+}
+.operator-console .operator-crew {
+  min-height: 0;
+  overflow-y: auto;
+}
+.operator-console .operator-conversation {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.operator-console .operator-conversation-heading,
+.operator-console .operator-party-status,
+.operator-console .operator-compose,
+.operator-console .operator-steering {
+  flex: 0 0 auto;
+}
+.operator-console .operator-stream {
+  flex: 1 1 auto;
+  min-height: 150px;
+  height: auto;
+}
+.operator-console .operator-compose {
+  margin-top: 10px;
+  margin-bottom: 10px;
+}
+.operator-console .operator-steering {
+  padding-top: 14px;
+  padding-bottom: 14px;
+}
+
+@media (min-width: 2200px) {
+  .operator-console { padding: 42px 56px; }
+  .operator-console .operator-layout { grid-template-columns: 300px minmax(0, 1fr); gap: 32px; }
+  .operator-console .operator-conversation-heading { padding: 28px 34px; }
+  .operator-console .operator-stream { padding-inline: 34px; }
+  .operator-console .operator-compose { margin-inline: 30px; }
+}
+
+/* ── Sonner toast: NOT draggable, X-only dismiss, error text copyable ────────
+   The operator reported the bottom-right toast slides when dragged, making the
+   error hard to read/copy. Sonner's default drag-to-dismiss gesture is the
+   culprit. Disable the gesture (no slide/translate on pointer), leave the X close
+   button, and keep text selectable so errors can be copied. */
+.sonner-toast {
+  user-select: text;
+  -webkit-user-select: text;
+  touch-action: pan-y;
+  touch-action: manipulation;
+}
+.sonner-toast [data-swipe-direction] {
+  pointer-events: none;
+}
+.sonner-toast:not([data-sonner-drag]) {
+  transform: none !important;
+}
+ol[data-sonner-toaster] li[data-removable='true'] {
+  -webkit-touch-callout: none;
+}
+/* Keep the toast from being picked up as a drag source / slid by pointer. */
+[data-sonner-toaster] .sonner-toast {
+  -webkit-user-drag: none;
+  user-drag: none;
+}

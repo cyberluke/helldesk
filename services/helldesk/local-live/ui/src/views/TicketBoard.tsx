@@ -39,10 +39,22 @@ export default function TicketBoard() {
                     <div className="bm">
                       <span className="chip ok">{b.status}</span>
                       <span className="mono">{short(b.ticketId, 8)}</span>
-                      {b.verificationState && <span className="mono">{b.verificationState}</span>}
-                      {b.missionState && <span className="chip">{b.missionState}</span>}
+                      {b.verificationState && <span className="chip" style={b.verificationState.includes('REJECTED') ? { background: 'var(--bad)' } : undefined}>{b.verificationState.replace(/_/g, ' ')}</span>}
+                      {b.missionState && <span className="chip">{b.missionState.replace(/_/g, ' ')}</span>}
                     </div>
                     {b.objective && <div className="muted" style={{ marginTop: 4, fontSize: 11 }}>{String(b.objective).slice(0, 72)}</div>}
+                    {b.quality && b.quality.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
+                        {b.quality.slice(0, 6).map((g) => (
+                          <span key={g.gate_key} className="mono" style={{
+                            fontSize: 9, padding: '1px 5px', borderRadius: 4,
+                            background: g.status === 'PASS' ? 'var(--glass)' : g.status === 'FAIL' ? 'rgba(248,113,113,.18)' : 'var(--glass)',
+                            border: `1px solid ${g.status === 'PASS' ? 'var(--ok)' : g.status === 'FAIL' ? 'var(--bad)' : 'var(--line)'}`,
+                            color: g.status === 'PASS' ? 'var(--ok)' : g.status === 'FAIL' ? 'var(--bad)' : 'var(--fg)',
+                          }}><span style={{ opacity: 0.7 }}>✓</span> {short(g.gate_key, 14)}</span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))}
             </div>

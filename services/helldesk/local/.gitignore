@@ -6,6 +6,7 @@ dist/
 config.json
 reports/
 .json
+data/probe/
 # runtime artifacts (logs / test output), never committed
 daemon.err.log
 daemon.out.log

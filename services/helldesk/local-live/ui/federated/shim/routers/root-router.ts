@@ -6,6 +6,8 @@
  * components read. This is a type-only module (no runtime surface needed).
  */
 
+import type { ObservabilitySnapshot } from '@/lib/trpc/observability';
+
 export type Department = { id: string; name: string; created_at: string; updated_at: string };
 export type Workstation = { id: string; department_id: string; name: string; git_url: string; default_branch: string; created_at: string; updated_at: string };
 export type Ticket = {
@@ -24,6 +26,8 @@ export type Ticket = {
   created_at: string;
   updated_at: string;
   closed_at: string | null;
+  /** Local operator archive overlay (true only when includeArchived=1). */
+  archived?: boolean;
 };
 export type Agent = {
   id: string;
@@ -55,7 +59,7 @@ export type DepartmentConfig = {
   env_vars: Record<string, string>;
   git_auth: { github_token?: string; gitlab_token?: string; gitlab_instance_url?: string; platform_integration_id?: string };
   default_model?: string;
-  max_polecats_per_workstation?: number;
+  max_souls_per_workstation?: number;
   qualityAssurance?: { gates: string[]; auto_merge: boolean; require_clean_merge: boolean };
 };
 
@@ -66,19 +70,23 @@ export type RootRouter = {
     getDepartment: { input: { departmentId: string }; output: Department };
     listWorkstations: { input: { departmentId: string }; output: Workstation[] };
     getWorkstation: { input: { workstationId: string }; output: Workstation };
-    listTickets: { input: { workstationId: string; departmentId?: string }; output: Ticket[] };
+    listTickets: { input: { workstationId?: string; departmentId?: string; includeArchived?: boolean }; output: Ticket[] };
     createTicket: { input: { departmentId?: string; workstationId: string; type: string; title: string }; output: Ticket };
     sling: { input: { departmentId?: string; workstationId: string; title: string; body?: string }; output: { ticket: Ticket; agent: Agent } };
-    deleteTicket: { input: { departmentId?: string; workstationId: string; ticketId: string }; output: void };
+    deleteTicket: { input: { departmentId?: string; workstationId?: string; ticketId: string }; output: void };
+    archiveTickets: { input: { departmentId?: string; ticketIds: string[]; archived?: boolean }; output: { archived: boolean; count: number } };
+    updateTicketStatus: { input: { departmentId?: string; workstationId?: string; ticketId: string; status: string }; output: Ticket };
     listAgents: { input: { workstationId: string; departmentId?: string }; output: Agent[] };
+    createAgent: { input: { departmentId?: string; workstationId: string; role: string; name: string; identity: string }; output: Agent };
     deleteAgent: { input: { departmentId?: string; workstationId: string; agentId: string }; output: void };
     getDepartmentEvents: { input: { departmentId: string; limit?: number }; output: DepartmentEvent[] };
+    getDepartmentObservability: { input: { departmentId: string }; output: ObservabilitySnapshot };
     getTicketEvents: { input: { departmentId?: string; workstationId: string; ticketId?: string }; output: TicketEvent[] };
     getDepartmentConfig: { input: { departmentId: string }; output: DepartmentConfig };
     updateDepartmentConfig: { input: { departmentId: string; config: Partial<DepartmentConfig> }; output: DepartmentConfig };
     createDepartment: { input: { name: string }; output: Department };
     deleteDepartment: { input: { departmentId: string }; output: void };
-    createWorkstation: { input: { departmentId: string; name: string; gitUrl: string; defaultBranch: string }; output: Workstation };
+    createWorkstation: { input: { departmentId: string; name: string; gitUrl?: string; defaultBranch?: string }; output: Workstation };
     deleteWorkstation: { input: { departmentId: string; workstationId: string }; output: void };
     ensureFrontDesk: { input: { departmentId: string }; output: { agentId: string; sessionStatus: string } };
     getFrontDeskStatus: { input: { departmentId: string }; output: { configured: boolean; session: null | { agentId: string; sessionId: string; status: string; lastActivityAt: string }; departmentId: string | null } };

@@ -2,7 +2,7 @@
 
 ## Repository Overview
 
-This is the **HELLDESK** repository (`cyberluke/helldesk`) — a local AI-first,
+This is the **HELLDESK** repository — a local AI-first,
 independently verified software engineering system. **Local-first:** the native
 Bun control plane is the primary product. Cloudflare Workers are an optional
 second execution home for the same domain, never a separate product.
@@ -51,7 +51,9 @@ Commands are scoped per package. Key entry points:
 | `bun run src/entry.ts` | Start the local-live federated runtime + UI |
 | `bun test tests/unit/` | Run the local engine unit suite |
 | `bunx tsc --noEmit -p tsconfig.json` | Typecheck a subtree |
-| `scripts/start-all.ps1` | Start all HELLDESK runtimes (local + local-live + NAI host) |
+| `scripts/install.cmd` | One-time user install: dependencies, UI build, logon services, Start Menu shortcut |
+| `scripts/start.cmd` | Start/stop/status the full local stack (uses the installed services; opens the Operator Console) |
+| `scripts/start-all.ps1` | Developer start for all HELLDESK runtimes (local + local-live + optional NAI host) |
 
 Read the relevant package manifest before running scripts. The local engine
 requires Windows, Bun, and a configured runner/provider for real inference.

@@ -1,285 +1,436 @@
 'use client';
 
-import { useState, useMemo } from 'react';
-import { useQuery, useQueries } from '@tanstack/react-query';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { useTRPC } from '@/lib/trpc/utils';
 import { useDrawerStack } from '@/components/helldesk/DrawerStack';
-import { Hexagon, Search, ShieldCheck, Users, Layers } from '@/lib/icons';
-import { formatDistanceToNow } from 'date-fns';
+import { TicketBoard, type KanbanTicket } from '@/components/helldesk/TicketBoard';
+import { TicketControls } from '@/components/helldesk/TicketControls';
+import { CheckCircle, Hexagon, Search, ShieldCheck, SlidersHorizontal } from '@/lib/icons';
 import type { inferRouterOutputs } from '@trpc/server';
 import type { RootRouter } from '@/routers/root-router';
-import { motion, AnimatePresence } from 'motion/react';
 
 type RouterOutputs = inferRouterOutputs<RootRouter>;
-type Ticket = RouterOutputs['helldesk']['listTickets'][number];
+type Ticket = RouterOutputs['helldesk']['listTickets'][number] & {
+  workstationName?: string;
+  workstationId?: string;
+};
 
 type TicketsPageClientProps = {
   departmentId: string;
 };
 
-const STATUS_DOT: Record<string, string> = {
-  open: 'bg-sky-400',
-  in_progress: 'bg-amber-400',
-  closed: 'bg-emerald-400',
-  failed: 'bg-red-400',
-};
-
-/** On-the-fly per-task toggles: NAI ExcellenceGovernor / Reviewer / Department agents.
- *  Persists to the ticket's metadata.break_room_controls (engine dispatch reads these to
- *  actually enable/disable each, not just a visual switch). */
-function TicketControls({ departmentId, ticket }: { departmentId: string; ticket: Ticket }) {
-  const meta = ((ticket as unknown as { metadata?: Record<string, unknown> }).metadata ?? {}) as Record<string, unknown>;
-  const breakRoom = (meta.break_room_controls ?? {}) as Record<string, unknown>;
-  const [controls, setControls] = useState<Record<string, boolean>>({
-    excellenceGovernor: breakRoom.excellenceGovernor !== false,
-    reviewer: breakRoom.reviewer !== false,
-    agents: breakRoom.agents !== false,
-  });
-  const [busy, setBusy] = useState<string | null>(null);
-
-  const toggle = async (key: 'excellenceGovernor' | 'reviewer' | 'agents') => {
-    const next = { ...controls, [key]: !controls[key] };
-    setBusy(key);
-    setControls(next);
-    try {
-      await fetch(`/api/departments/${departmentId}/tickets/${ticket.ticket_id}/controls`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [key]: next[key] }),
-      });
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const items: Array<{ key: 'excellenceGovernor' | 'reviewer' | 'agents'; label: string; icon: typeof ShieldCheck }> = [
-    { key: 'excellenceGovernor', label: 'Inq', icon: ShieldCheck },
-    { key: 'reviewer', label: 'Rev', icon: Users },
-    { key: 'agents', label: 'Agents', icon: Layers },
-  ];
-
-  return (
-    <div className="flex shrink-0 items-center gap-1" onClick={e => e.stopPropagation()}>
-      {items.map(it => {
-        const on = controls[it.key] !== false;
-        const Icon = it.icon;
-        return (
-          <button
-            key={it.key}
-            title={`${on ? 'Disable' : 'Enable'} ${it.label}`}
-            disabled={busy === it.key}
-            onClick={() => toggle(it.key)}
-            className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-medium transition-colors ${
-              on ? 'bg-emerald-500/15 text-emerald-300/90 hover:bg-emerald-500/25' : 'bg-white/[0.04] text-white/25 hover:bg-white/[0.08]'
-            }`}
-          >
-            <Icon className="size-2.5" />
-            {it.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 export function TicketsPageClient({ departmentId }: TicketsPageClientProps) {
   const trpc = useTRPC();
+  const queryClient = useQueryClient();
   const { open: openDrawer } = useDrawerStack();
-  const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [workstationFilter, setWorkstationFilter] = useState('');
+  const [showArchived, setShowArchived] = useState(false);
+  const [optimisticStatus, setOptimisticStatus] = useState<Record<string, string>>({});
+  const [notificationPermission, setNotificationPermission] = useState<string>(
+    typeof Notification !== 'undefined' ? Notification.permission : 'denied',
+  );
+  const knownVerified = useRef<Set<string> | null>(null);
+  const initialTicketsLoaded = useRef(false);
 
   const workstationsQuery = useQuery(trpc.helldesk.listWorkstations.queryOptions({ departmentId }));
   const workstations = workstationsQuery.data ?? [];
 
-  // Fetch tickets for each workstation — useQueries handles dynamic-length arrays safely
-  const workstationTicketQueries = useQueries({
-    queries: workstations.map(workstation => ({
-      ...trpc.helldesk.listTickets.queryOptions({ workstationId: workstation.id }),
-      refetchInterval: 8_000,
-    })),
+  // One department-wide query (includes the engine mission projection) or one
+  // seat query when a workstation filter is active.
+  const ticketsQuery = useQuery({
+    ...trpc.helldesk.listTickets.queryOptions(
+      workstationFilter
+        ? { departmentId, workstationId: workstationFilter, includeArchived: showArchived }
+        : { departmentId, includeArchived: showArchived },
+    ),
+    refetchInterval: 6000,
   });
 
-  const workstationTicketData = workstationTicketQueries.map(q => q.data);
-  const allTickets = useMemo(() => {
-    const tickets: Array<Ticket & { workstationName: string; workstationId: string }> = [];
-    workstationTicketData.forEach((data, i) => {
-      const workstation = workstations[i];
-      if (data && workstation) {
-        for (const ticket of data) {
-          tickets.push({ ...ticket, workstationName: workstation.name, workstationId: workstation.id });
-        }
-      }
-    });
-    // Sort newest first
-    tickets.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-    return tickets;
-  }, [workstationTicketData, workstations]);
-
-  const filteredTickets = useMemo(() => {
-    let tickets = allTickets;
-    if (statusFilter) {
-      tickets = tickets.filter(b => b.status === statusFilter);
+  // A deleted workstation must not leave the board pinned to a dead filter.
+  useEffect(() => {
+    if (!workstationFilter || workstations.length === 0) return;
+    if (!workstations.some(workstation => workstation.id === workstationFilter)) {
+      setWorkstationFilter('');
     }
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      tickets = tickets.filter(
-        b => b.title.toLowerCase().includes(q) || b.ticket_id.toLowerCase().includes(q)
-      );
-    }
-    return tickets;
-  }, [allTickets, statusFilter, search]);
+  }, [workstationFilter, workstations]);
 
-  const statusCounts = useMemo(() => {
-    const counts: Record<string, number> = { open: 0, in_progress: 0, closed: 0, failed: 0 };
-    for (const ticket of allTickets) {
-      counts[ticket.status] = (counts[ticket.status] ?? 0) + 1;
-    }
-    return counts;
-  }, [allTickets]);
+  const selectedWorkstation = workstations.find(workstation => workstation.id === workstationFilter);
 
-  const isLoading = workstationsQuery.isLoading || workstationTicketQueries.some(q => q.isLoading);
-
-  return (
-    <div className="flex h-full flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-white/[0.06] px-6 py-3">
-        <div className="flex items-center gap-2">
-          <Hexagon className="size-4 text-[color:oklch(95%_0.15_108_/_0.6)]" />
-          <h1 className="text-lg font-semibold tracking-tight text-white/90">Tickets</h1>
-          <span className="ml-1 font-mono text-xs text-white/30">{allTickets.length}</span>
-        </div>
-      </div>
-
-      {/* Filter bar */}
-      <div className="flex items-center gap-3 border-b border-white/[0.06] px-6 py-2">
-        {/* Search */}
-        <div className="flex items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5">
-          <Search className="size-3 text-white/30" />
-          <input
-            type="text"
-            placeholder="Search tickets..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="w-48 bg-transparent text-xs text-white/80 outline-none placeholder:text-white/25"
-          />
-        </div>
-
-        {/* Status filter chips */}
-        <div className="flex items-center gap-1">
-          <FilterChip
-            label="All"
-            count={allTickets.length}
-            active={statusFilter === null}
-            onClick={() => setStatusFilter(null)}
-          />
-          {Object.entries(statusCounts).map(([status, count]) => (
-            <FilterChip
-              key={status}
-              label={status.replace('_', ' ')}
-              count={count}
-              active={statusFilter === status}
-              onClick={() => setStatusFilter(statusFilter === status ? null : status)}
-              dotColor={STATUS_DOT[status]}
-            />
-          ))}
-        </div>
-      </div>
-
-      {/* Ticket list */}
-      <div className="flex-1 overflow-y-auto">
-        {isLoading && (
-          <div className="space-y-0">
-            {Array.from({ length: 8 }).map((_, i) => (
-              <div
-                key={i}
-                className="flex animate-pulse items-center gap-3 border-b border-white/[0.04] px-6 py-3"
-              >
-                <div className="size-2 rounded-full bg-white/10" />
-                <div className="h-3 w-40 rounded bg-white/5" />
-                <div className="ml-auto h-3 w-20 rounded bg-white/5" />
-              </div>
-            ))}
-          </div>
-        )}
-
-        {!isLoading && filteredTickets.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-16 text-center">
-            <Hexagon className="mb-3 size-8 text-white/10" />
-            <p className="text-sm text-white/30">
-              {search || statusFilter ? 'No tickets match your filters.' : 'No tickets yet.'}
-            </p>
-          </div>
-        )}
-
-        <AnimatePresence mode="popLayout">
-          {filteredTickets.map((ticket, i) => (
-            <motion.div
-              key={ticket.ticket_id}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ delay: Math.min(i * 0.02, 0.3), duration: 0.15 }}
-              onClick={() => {
-                const workstationId = (ticket as Ticket & { workstationId: string }).workstationId;
-                openDrawer({ type: 'ticket', ticketId: ticket.ticket_id, workstationId });
-              }}
-              className="group flex cursor-pointer items-center gap-3 border-b border-white/[0.04] px-6 py-2.5 transition-colors hover:bg-white/[0.02]"
-            >
-              <span
-                className={`size-2 shrink-0 rounded-full ${STATUS_DOT[ticket.status] ?? 'bg-white/20'}`}
-              />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="truncate text-sm text-white/80">{ticket.title}</span>
-                  <span className="shrink-0 rounded bg-white/[0.04] px-1.5 py-0.5 text-[9px] font-medium text-white/30">
-                    {ticket.type}
-                  </span>
-                </div>
-                <div className="mt-0.5 flex items-center gap-2 text-[10px] text-white/30">
-                  <span className="font-mono">{ticket.ticket_id.slice(0, 8)}</span>
-                  <span className="text-white/15">|</span>
-                  <span>{(ticket as Ticket & { workstationName: string }).workstationName}</span>
-                  <span className="text-white/15">|</span>
-                  <span>{formatDistanceToNow(new Date(ticket.created_at), { addSuffix: true })}</span>
-                </div>
-              </div>
-              <TicketControls departmentId={departmentId} ticket={ticket} />
-              <span className="shrink-0 text-[10px] text-white/25 capitalize">{ticket.priority}</span>
-            </motion.div>
-          ))}
-        </AnimatePresence>
-      </div>
-
-      {/* Drawers are rendered by the layout-level DrawerStackProvider */}
-    </div>
+  const workstationNameById = useMemo(
+    () => new Map(workstations.map(workstation => [workstation.id, workstation.name])),
+    [workstations],
   );
-}
 
-function FilterChip({
-  label,
-  count,
-  active,
-  onClick,
-  dotColor,
-}: {
-  label: string;
-  count: number;
-  active: boolean;
-  onClick: () => void;
-  dotColor?: string;
-}) {
+  const allTickets = useMemo(() => {
+    const rows = ticketsQuery.data ?? [];
+    return rows
+      .map(ticket => ({
+        ...ticket,
+        status: optimisticStatus[ticket.ticket_id] ?? ticket.status,
+        workstationId: ticket.workstation_id ?? undefined,
+        workstationName: ticket.workstation_id
+          ? workstationNameById.get(ticket.workstation_id)
+          : undefined,
+      }))
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  }, [ticketsQuery.data, workstationNameById, optimisticStatus]);
+
+  const visibleTickets = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return allTickets;
+    return allTickets.filter(ticket =>
+      ticket.title.toLowerCase().includes(query) ||
+      ticket.ticket_id.toLowerCase().includes(query) ||
+      ticket.workstationName?.toLowerCase().includes(query)
+    );
+  }, [allTickets, search]);
+
+  const moveTicket = useMutation(
+    trpc.helldesk.updateTicketStatus.mutationOptions({
+      onSuccess: (_data: unknown, variables: { ticketId: string }) => {
+        setOptimisticStatus(current => {
+          const next = { ...current };
+          delete next[variables.ticketId];
+          return next;
+        });
+        void queryClient.invalidateQueries({ queryKey: ['helldesk', 'listTickets'] });
+      },
+      onError: (_error: unknown, variables: { ticketId: string }) => {
+        setOptimisticStatus(current => {
+          const next = { ...current };
+          delete next[variables.ticketId];
+          return next;
+        });
+      },
+    })
+  );
+
+  const archiveTickets = useMutation(
+    trpc.helldesk.archiveTickets.mutationOptions({
+      onSuccess: (
+        result: { count?: number; archived?: boolean },
+        variables: { ticketIds?: string[]; archived?: boolean },
+      ) => {
+        void queryClient.invalidateQueries({ queryKey: ['helldesk', 'listTickets'] });
+        // Count the cards the operator acted on, not the expanded server ids
+        // (a mission-bound card also archives its mission projection id).
+        const count = variables?.ticketIds?.length ?? result?.count ?? 0;
+        toast.success(
+          `${count} task${count === 1 ? '' : 's'} ${result?.archived === false ? 'restored' : 'archived'}.`,
+        );
+      },
+      onError: (error: unknown) => {
+        toast.error(error instanceof Error ? error.message : 'Could not update the archive');
+      },
+    }),
+  );
+
+  const archiveClosed = () => {
+    const ids = allTickets
+      .filter(ticket => ticket.status === 'closed' && !ticket.archived)
+      .map(ticket => ticket.ticket_id);
+    if (!ids.length) {
+      toast.info('No closed tasks to archive.');
+      return;
+    }
+    archiveTickets.mutate({ departmentId, ticketIds: ids, archived: true });
+  };
+
+  useEffect(() => {
+    let socket: WebSocket | null = null;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    let disposed = false;
+
+    const connect = () => {
+      if (disposed) return;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      socket = new WebSocket(`${protocol}//${window.location.host}/api/departments/${encodeURIComponent(departmentId)}/events-ws`);
+      socket.onmessage = () => {
+        void queryClient.invalidateQueries({ queryKey: ['helldesk', 'listTickets'] });
+      };
+      socket.onclose = () => {
+        if (!disposed) retry = setTimeout(connect, 1200);
+      };
+    };
+
+    connect();
+    return () => {
+      disposed = true;
+      if (retry) clearTimeout(retry);
+      socket?.close();
+    };
+  }, [departmentId, queryClient]);
+
+  const isLoading = workstationsQuery.isLoading || ticketsQuery.isLoading;
+
+  const awaitingAcceptance = useMemo(
+    () =>
+      allTickets.filter(ticket => {
+        const meta = (ticket.metadata ?? {}) as Record<string, unknown>;
+        return (
+          meta.awaiting_human_acceptance === true ||
+          (meta.engine_state === 'VERIFIED_10_10' && meta.human_acceptance !== 'accepted')
+        );
+      }),
+    [allTickets],
+  );
+
+  const openMission = (ticketId: string, workstationId?: string) => {
+    openDrawer({ type: 'ticket', ticketId, workstationId, departmentId });
+  };
+
+  const deleteTask = async (ticketId: string) => {
+    const full = allTickets.find(candidate => candidate.ticket_id === ticketId);
+    const meta = (full?.metadata ?? {}) as Record<string, unknown>;
+    const localMission = meta.local_mission && typeof meta.local_mission === 'object'
+      ? (meta.local_mission as { missionId?: unknown })
+      : null;
+    const missionId = ticketId.startsWith('mis_')
+      ? ticketId
+      : typeof localMission?.missionId === 'string'
+        ? localMission.missionId
+        : '';
+    const label = full?.title ?? ticketId.slice(0, 8);
+    const confirmed = window.confirm(
+      missionId
+        ? `Cancel mission "${label}" and remove it from the board?`
+        : `Delete task "${label}"? This cannot be undone.`,
+    );
+    if (!confirmed) return;
+    try {
+      if (missionId) {
+        const response = await fetch(`/api/missions/${encodeURIComponent(missionId)}/cancel`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+        if (!response.ok) throw new Error(`Cancel failed (HTTP ${response.status})`);
+        await archiveTickets.mutateAsync({
+          departmentId,
+          ticketIds: [ticketId, missionId],
+          archived: true,
+        });
+      } else {
+        const response = await fetch(
+          `/api/departments/${encodeURIComponent(departmentId)}/tickets/${encodeURIComponent(ticketId)}`,
+          { method: 'DELETE' },
+        );
+        if (!response.ok) throw new Error(`Delete failed (HTTP ${response.status})`);
+        void queryClient.invalidateQueries({ queryKey: ['helldesk', 'listTickets'] });
+      }
+      toast.success(missionId ? 'Mission cancelled and archived.' : 'Task deleted.');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not remove the task');
+    }
+  };
+
+  // Completion notification: a mission that becomes VERIFIED_10_10 while the
+  // board is open announces itself. First load is silent (no replay spam).
+  useEffect(() => {
+    // Wait for the FIRST complete snapshot before arming notifications; otherwise
+    // incremental ticket-query results replay every historical verification as a
+    // fresh toast on page load.
+    if (isLoading) return;
+    const verified = new Set(
+      allTickets
+        .filter(ticket => ((ticket.metadata ?? {}) as Record<string, unknown>).engine_state === 'VERIFIED_10_10')
+        .map(ticket => ticket.ticket_id),
+    );
+    if (!initialTicketsLoaded.current) {
+      initialTicketsLoaded.current = true;
+      knownVerified.current = verified;
+      return;
+    }
+    if (knownVerified.current === null) {
+      knownVerified.current = verified;
+      return;
+    }
+    for (const ticketId of verified) {
+      if (knownVerified.current.has(ticketId)) continue;
+      const ticket = allTickets.find(candidate => candidate.ticket_id === ticketId);
+      if (!ticket) continue;
+      const meta = (ticket.metadata ?? {}) as Record<string, unknown>;
+      if (meta.human_acceptance === 'accepted') continue;
+      const title = ticket.title || 'Mission verified';
+      toast.success('Mission verified — Governor PASS', {
+        description: `${title} is awaiting your acceptance.`,
+        action: { label: 'Review', onClick: () => openMission(ticket.ticket_id, ticket.workstationId) },
+      });
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        try {
+          new Notification('Mission verified — Governor PASS', { body: `${title} is awaiting your acceptance.` });
+        } catch { /* notification construction is best effort */ }
+      }
+    }
+    knownVerified.current = verified;
+  }, [allTickets, isLoading]);
+
+  const enableDesktopAlerts = async () => {
+    if (typeof Notification === 'undefined') {
+      toast.error('Desktop alerts are not available in this browser.');
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
+    if (permission === 'granted') toast.success('Desktop alerts enabled for mission completion.');
+  };
+
   return (
-    <button
-      onClick={onClick}
-      className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[10px] font-medium capitalize transition-colors ${
-        active
-          ? 'bg-white/[0.08] text-white/70'
-          : 'text-white/30 hover:bg-white/[0.04] hover:text-white/50'
-      }`}
-    >
-      {dotColor && <span className={`size-1.5 rounded-full ${dotColor}`} />}
-      {label}
-      <span className="font-mono text-[9px] opacity-60">{count}</span>
-    </button>
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <header className="flex shrink-0 items-center justify-between border-b border-white/[0.055] px-7 py-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <Hexagon className="size-4 text-teal-200/70" />
+            <h1 className="text-lg font-semibold tracking-[-0.025em] text-white/90">Kanban</h1>
+            <span className="font-mono text-[10px] text-white/30">{allTickets.filter(ticket => ticket.type !== 'agent' && ticket.type !== 'message').length}</span>
+          </div>
+          <p className="mt-1 text-[11px] text-white/30">
+            {selectedWorkstation
+              ? `Showing ${selectedWorkstation.name} — seat-routed work only. Department missions stay on All workstations.`
+              : 'One live workflow across every workstation. Drag cards to transition; agents keep running.'}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="flex items-center gap-2 rounded-xl border border-white/[0.07] bg-white/[0.025] px-3 py-2 [color-scheme:dark]">
+            <SlidersHorizontal className="size-3.5 text-white/25" />
+            <select
+              value={workstationFilter}
+              onChange={event => setWorkstationFilter(event.target.value)}
+              aria-label="Filter by workstation"
+              className="min-w-[130px] bg-transparent text-xs text-white/80 outline-none"
+            >
+              <option value="">All workstations</option>
+              {workstations.map(workstation => (
+                <option key={workstation.id} value={workstation.id}>{workstation.name}</option>
+              ))}
+            </select>
+          </label>
+          {workstationFilter ? (
+            <button
+              type="button"
+              onClick={() => setWorkstationFilter('')}
+              className="text-[10px] text-white/30 transition-colors hover:text-white/70"
+            >
+              Clear
+            </button>
+          ) : null}
+          <label className="flex items-center gap-1.5 text-[10px] text-white/35">
+            <input
+              type="checkbox"
+              checked={showArchived}
+              onChange={event => setShowArchived(event.target.checked)}
+              className="size-3 accent-teal-300"
+            />
+            Show archived
+          </label>
+          <button
+            type="button"
+            onClick={archiveClosed}
+            disabled={archiveTickets.isPending}
+            className="rounded-md border border-white/[0.07] bg-white/[0.025] px-2 py-1 text-[10px] text-white/45 transition-colors hover:bg-white/[0.05] hover:text-white/75 disabled:opacity-40"
+          >
+            Archive closed
+          </button>
+          <label className="flex w-[280px] items-center gap-2 rounded-xl border border-white/[0.07] bg-white/[0.025] px-3 py-2">
+            <Search className="size-3.5 text-white/25" />
+            <input
+              type="text"
+              placeholder="Search title, ticket, workstation…"
+              value={search}
+              onChange={event => setSearch(event.target.value)}
+              className="min-w-0 flex-1 bg-transparent text-xs text-white/80 outline-none placeholder:text-white/20"
+            />
+          </label>
+        </div>
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-auto p-4 [scrollbar-color:rgba(148,163,184,.28)_transparent] [scrollbar-width:thin]">
+        {awaitingAcceptance.length > 0 ? (
+          <div className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-amber-300/15 bg-amber-300/[0.05] px-4 py-3">
+            <ShieldCheck className="size-4 shrink-0 text-amber-100/70" />
+            <div className="min-w-0">
+              <div className="text-[12px] font-semibold text-amber-100/85">
+                {awaitingAcceptance.length === 1
+                  ? 'One mission is verified and awaiting your acceptance'
+                  : `${awaitingAcceptance.length} missions are verified and awaiting your acceptance`}
+              </div>
+              <div className="mt-0.5 truncate text-[10px] text-amber-100/40">
+                {awaitingAcceptance[0]?.title}
+              </div>
+            </div>
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const first = awaitingAcceptance[0];
+                  if (first) openMission(first.ticket_id, first.workstationId);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-md border border-amber-300/20 bg-amber-300/10 px-2.5 py-1.5 text-[10px] font-semibold text-amber-100/85 hover:bg-amber-300/15"
+              >
+                <CheckCircle className="size-3" /> Review & accept
+              </button>
+              {notificationPermission === 'default' ? (
+                <button
+                  type="button"
+                  onClick={() => void enableDesktopAlerts()}
+                  className="text-[10px] text-amber-100/35 hover:text-amber-100/70"
+                >
+                  Enable desktop alerts
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+        <TicketBoard
+          tickets={visibleTickets as unknown as KanbanTicket[]}
+          isLoading={isLoading}
+          onDeleteTicket={deleteTask}
+          onRestoreTicket={ticketId => {
+            archiveTickets.mutate({ departmentId, ticketIds: [ticketId], archived: false });
+          }}
+          onSelectTicket={ticket => {
+            const full = allTickets.find(candidate => candidate.ticket_id === ticket.ticket_id);
+            // Department missions have no workstation binding; the drawer accepts
+            // an undefined workstation and resolves the ticket department-wide.
+            openDrawer({ type: 'ticket', ticketId: ticket.ticket_id, workstationId: full?.workstationId, departmentId });
+          }}
+          onMoveTicket={(ticket, status) => {
+            const full = allTickets.find(candidate => candidate.ticket_id === ticket.ticket_id);
+            const meta = (full?.metadata ?? {}) as Record<string, unknown>;
+            const awaitingHumanAcceptance =
+              meta.awaiting_human_acceptance === true ||
+              (meta.engine_state === 'VERIFIED_10_10' && meta.human_acceptance !== 'accepted');
+            // Machine verification is not human acceptance. Never let a drop to
+            // CLOSED silently flip back to IN REVIEW — send the operator to the
+            // acceptance gate in the drawer instead.
+            if (status === 'closed' && awaitingHumanAcceptance) {
+              toast.info('Machine verification passed. Open the task and accept it to close it.');
+              if (full) openDrawer({ type: 'ticket', ticketId: full.ticket_id, workstationId: full.workstationId, departmentId });
+              return;
+            }
+            setOptimisticStatus(current => ({ ...current, [ticket.ticket_id]: status }));
+            moveTicket.mutate({
+              departmentId,
+              workstationId: full?.workstationId,
+              ticketId: ticket.ticket_id,
+              status,
+            });
+          }}
+          renderActions={ticket => {
+            const full = allTickets.find(candidate => candidate.ticket_id === ticket.ticket_id);
+            return full ? (
+              <TicketControls
+                departmentId={departmentId}
+                ticket={full}
+                onUpdated={() => void queryClient.invalidateQueries()}
+              />
+            ) : null;
+          }}
+        />
+      </div>
+    </div>
   );
 }

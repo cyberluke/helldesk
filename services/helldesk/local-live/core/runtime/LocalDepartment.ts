@@ -30,6 +30,7 @@ import * as reviewTable from '../db/tables/review-metadata.table';
 import * as escTable from '../db/tables/escalation-metadata.table';
 import * as shiftTable from '../db/tables/shift-metadata.table';
 import * as departmentEventsTable from '../db/tables/department-events.table';
+import * as archiveTable from '../db/tables/ticket-archives.table';
 import { query } from '../util/query.util';
 import { generateId as genId, now as nowIso } from '../util/id.util';
 import { join } from 'node:path';
@@ -73,9 +74,10 @@ import {
   type RuntimeEvent,
 } from './local-reconciler';
 import type { ApplyActionContext } from '../dos/department/actions';
+import { ensureWorkspaceRepo } from './adapters';
 import { missionBinding, cancelMission } from './mission-dispatch';
-import { listMissionsProjected } from './mission-reconcile';
-import { listWorkersProjected } from './worker-reconcile';
+import { listMissionsProjected, projectMissionsIntoBoard, mergeLocalMissionState } from './mission-reconcile';
+import { listWorkersProjected, projectWorkersIntoRoster } from './worker-reconcile';
 import { listEventsProjected } from './events-reconcile';
 import { applyEvent } from '../dos/department/reconciler';
 import type { FailureReason } from '../dos/department/types';
@@ -88,7 +90,7 @@ export type WorkstationConfig = {
   default_branch?: string;
   git_repo_url?: string;
   default_model?: string;
-  max_concurrent_polecats?: number;
+  max_concurrent_souls?: number;
   max_dispatch_attempts?: number;
   key?: string;
   /** Handler (cloud) field aliases — normalized by configureWorkstation below. */
@@ -189,6 +191,9 @@ export class LocalDepartment implements LocalDepartmentLite {
     // memo / review-queue / helldesk rely on the tables above (tickets etc.), so
     // only their satellite DDL is needed; helldesk uses a plain table.
     try { db.exec(`CREATE TABLE IF NOT EXISTS helldesk (helldesk_id text primary key, ticket_id text, claimed_by text, status text default 'open', created_at text)`); } catch { /* optional */ }
+    // Operator archive overlay (local-only): hides closed/cancelled cards from
+    // the board without deleting the engine mission or its durable record.
+    run(archiveTable.createTableTicketArchives());
     // fuels: initMemoTables/initReviewQueueTables create their own small tables
     try { memoTable.initMemoTables(this.sql); } catch { /* optional */ }
     try { reviewQueueTable.initReviewQueueTables(this.sql); } catch { /* optional */ }
@@ -259,9 +264,32 @@ export class LocalDepartment implements LocalDepartmentLite {
       ...update,
       local_repo:
         update.local_repo !== undefined
-          ? LocalRepoSchema.parse({ ...current.local_repo, ...update.local_repo })
+          ? LocalRepoSchema.parse({
+              ...current.local_repo,
+              ...update.local_repo,
+              // `null` is the explicit "remove the output repo" signal from the
+              // API/UI; `undefined` means "leave the current target alone".
+              // LocalRepoSchema rejects null (it expects an object), so normalise
+              // BEFORE parsing — the web DO path already does this, the local
+              // runtime did not (500 "expected object, received null").
+              output_repo:
+                update.local_repo.output_repo === null
+                  ? undefined
+                  : update.local_repo.output_repo ?? current.local_repo?.output_repo,
+            })
           : current.local_repo,
     });
+    // Pointing at a plain directory must "just work": create it when missing and
+    // git-init it when it is not yet a repo, so both Save repos and Create task
+    // leave a usable workspace. Single-repo mode uses this same path as the
+    // output (input = output).
+    if (
+      update.local_repo !== undefined &&
+      next.local_repo?.adapter === 'local-git' &&
+      next.local_repo.repo_path
+    ) {
+      await ensureWorkspaceRepo(next.local_repo.repo_path, next.local_repo.branch);
+    }
     try {
       await this.storage.put(LocalDepartment.CONFIG_KEY, next);
     } catch (e) {
@@ -294,7 +322,7 @@ export class LocalDepartment implements LocalDepartmentLite {
       name: r.name,
       default_branch: r.default_branch,
       git_repo_url: r.git_url,
-      max_concurrent_polecats: r.config?.max_concurrent_polecats,
+      max_concurrent_souls: r.config?.max_concurrent_souls,
       max_dispatch_attempts: r.config?.max_dispatch_attempts,
       default_model: r.config?.default_model,
     };
@@ -359,21 +387,92 @@ async configureWorkstation(workstationConfig: WorkstationConfig): Promise<void> 
   async getTicketAsync(ticketId: string): Promise<Ticket | null> { return ticketOps.getTicket(this.sql, ticketId); }
   async getTicketPublic(ticketId: string): Promise<Ticket | null> { return ticketOps.getTicket(this.sql, ticketId); }
   async listTickets(filter: TicketFilter): Promise<Ticket[]> {
-    const local = ticketOps.listTickets(this.sql, filter);
+    const archived = this.archivedTicketIds();
+    const keep = (ticket: Ticket): Ticket | null => {
+      const isArchived = archived.has(ticket.ticket_id);
+      if (isArchived && !filter.include_archived) return null;
+      return isArchived ? ({ ...ticket, archived: true } as Ticket) : ticket;
+    };
+    const local = ticketOps.listTickets(this.sql, filter)
+      .map(keep)
+      .filter((ticket): ticket is Ticket => ticket !== null);
     // No-split-brain: project the real control-plane missions into the ticket
     // surface so the operator board shows the autonomous work (and stays bound
     // to the engine truth). Read-time only — never disturbs the runtime.
+    // A local ticket bound to a mission gets the LIVE mission state overlaid
+    // (backfilled tickets otherwise keep a stale in_review snapshot and look
+    // like they flip back after acceptance). Missions are department-scoped, so
+    // only the department board appends the unbound projection.
     try {
-      const missions = await listMissionsProjected();
-      if (missions.length === 0) return local;
-      // De-duplicate: if the local store already holds a mission-bound ticket
-      // (e.g. created by submitMission), don't duplicate it.
-      const localIds = new Set(local.map(t => t.ticket_id));
-      const extra = missions.filter(t => !localIds.has(t.ticket_id));
-      return [...extra, ...local];
+      const missions = (await listMissionsProjected())
+        .map(keep)
+        .filter((ticket): ticket is Ticket => ticket !== null);
+      const merged = mergeLocalMissionState(local, missions);
+      if (filter.workstation_id) return merged;
+      return projectMissionsIntoBoard(merged, missions, filter);
     } catch {
       return local;
     }
+  }
+
+  /** Local archive overlay ids (never engine state). Missing table = empty. */
+  private archivedTicketIds(): Set<string> {
+    const ids = new Set<string>();
+    try {
+      const rows = query(
+        this.sql,
+        /* sql */ `SELECT ${archiveTable.ticket_archives.ticket_id} FROM ${archiveTable.ticket_archives}`,
+        [],
+      );
+      const parsed = archiveTable.TicketArchiveRecord
+        .pick({ ticket_id: true })
+        .array()
+        .parse([...rows]);
+      for (const row of parsed) ids.add(row.ticket_id);
+    } catch { /* table not created yet */ }
+    return ids;
+  }
+
+  /** Archive/unarchive task cards. Works for local tickets AND projected
+   *  mission ids (mis_*) — the engine mission itself is never modified. */
+  async archiveTickets(ticketIds: string[], archived = true): Promise<number> {
+    const ids = new Set<string>();
+    for (const rawId of ticketIds) {
+      const id = rawId.trim();
+      if (!id) continue;
+      ids.add(id);
+      // A local mission-bound ticket is deduped against its projection. If only
+      // the local id were archived, the projected mission would reappear in the
+      // next listTickets pass. Archive/unarchive both sides together.
+      try {
+        const local = ticketOps.getTicket(this.sql, id);
+        const missionId = (local?.metadata as { local_mission?: { missionId?: unknown } } | undefined)
+          ?.local_mission?.missionId;
+        if (typeof missionId === 'string' && missionId) ids.add(missionId);
+      } catch { /* local ticket lookup is best-effort */ }
+    }
+    if (!ids.size) return 0;
+    const at = nowIso();
+    let count = 0;
+    for (const id of ids) {
+      try {
+        if (archived) {
+          query(
+            this.sql,
+            /* sql */ `INSERT OR REPLACE INTO ${archiveTable.ticket_archives} (${archiveTable.ticket_archives.columns.ticket_id}, ${archiveTable.ticket_archives.columns.archived_at}) VALUES (?, ?)`,
+            [id, at],
+          );
+        } else {
+          query(
+            this.sql,
+            /* sql */ `DELETE FROM ${archiveTable.ticket_archives} WHERE ${archiveTable.ticket_archives.ticket_id} = ?`,
+            [id],
+          );
+        }
+        count += 1;
+      } catch { /* best effort per id */ }
+    }
+    return count;
   }
   async updateTicketStatus(ticketId: string, status: TicketStatus, agentId: string, failureReason?: FailureReason): Promise<Ticket> {
     if (status === 'in_progress' && ticketOps.hasUnresolvedBlockers(this.sql, ticketId)) throw Error('Task dependencies are not completed and landed');
@@ -460,14 +559,18 @@ async configureWorkstation(workstationConfig: WorkstationConfig): Promise<void> 
   async getAgentByIdentity(identity: string): Promise<Agent | null> { return agentOps.getAgentByIdentity(this.sql, identity); }
   async listAgents(filter?: AgentFilter): Promise<Agent[]> {
     const local = agentOps.listAgents(this.sql, filter);
+    // Engine workers are DEPARTMENT-scoped (projected workstation_id=null), so
+    // they belong on the department roster only. A seat roster shows only agents
+    // registered to that workstation; merging the unfiltered projection made
+    // every workstation page show the same crew.
+    if (filter?.workstation_id) return local;
     // No-split-brain: show the engine's real autonomous workers alongside any
     // local (frontDesk/pty) agents. Read-time projection from the control plane.
     try {
-      const workers = await listWorkersProjected();
-      if (workers.length === 0) return local;
-      const localIds = new Set(local.map(a => a.id));
-      const extra = workers.filter(a => !localIds.has(a.id));
-      return [...extra, ...local];
+      // Include IDLE roles too: a reviewer that finished must stay visible in the
+      // crew (as idle), not vanish the moment its process exits.
+      const workers = await listWorkersProjected(false);
+      return projectWorkersIntoRoster(local, workers, filter);
     } catch {
       return local;
     }
@@ -520,15 +623,30 @@ async configureWorkstation(workstationConfig: WorkstationConfig): Promise<void> 
    * get the `TicketEventRecord` shape the original HELLDESK client expects.
    */
   async listTicketEvents(options: { ticketId?: string; since?: string; limit?: number }): Promise<unknown[]> {
+    const limit = options.limit ?? 200;
     const local = typeof ticketOps.listTicketEvents === 'function' ? ticketOps.listTicketEvents(this.sql, options) : [];
     // No-split-brain observability: project the REAL engine event stream so the
     // GUI Observability surface shows what the engine is actually doing. Read-time only.
     try {
-      const engine = await listEventsProjected(options.limit ?? 200);
-      if (engine.length === 0) return local;
+      const engine = await listEventsProjected(limit, { ticketId: options.ticketId });
+      // A per-ticket timeline must only show events attributed to that ticket;
+      // department-wide feeds pass no ticketId and keep the whole stream.
+      const scopedEngine = options.ticketId
+        ? engine.filter((e) => e.ticket_id === options.ticketId)
+        : engine;
       const seen = new Set((local as Array<{ ticket_event_id?: string }>).map((e) => e.ticket_event_id));
-      const extra = engine.filter((e) => !seen.has(e.ticket_event_id));
-      return [...extra, ...local];
+      const merged = [
+        ...scopedEngine.filter((e) => !seen.has(e.ticket_event_id)),
+        ...(local as unknown as Array<{ created_at?: string; ticket_event_id?: string }>),
+      ]
+        .filter((e) => !options.since || (typeof e.created_at === 'string' && e.created_at > options.since))
+        .sort((a, b) => {
+          const ta = typeof a.created_at === 'string' ? Date.parse(a.created_at) : 0;
+          const tb = typeof b.created_at === 'string' ? Date.parse(b.created_at) : 0;
+          return tb - ta || String(b.ticket_event_id ?? '').localeCompare(String(a.ticket_event_id ?? ''));
+        });
+      // The caller asked for the NEWEST `limit` events across both sources.
+      return merged.slice(0, limit);
     } catch {
       return local;
     }

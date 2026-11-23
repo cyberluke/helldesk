@@ -325,7 +325,7 @@ export class DepartmentDO extends DurableObject<Env> {
           });
         }
 
-        // When merge_strategy is 'pr', polecats always create the PR themselves
+        // When merge_strategy is 'pr', souls always create the PR themselves
         // and pass pr_url to gt_done. For review-then-land shift intermediate
         // tickets, the PR targets the shift feature branch (not main).
         if (agent.role === 'soul' && effectiveConfig.merge_strategy === 'pr') {
@@ -3584,7 +3584,7 @@ export class DepartmentDO extends DurableObject<Env> {
   }
 
   /**
-   * Atomic batch sling: create N tickets + 1 shift, assign polecats, dispatch.
+   * Atomic batch sling: create N tickets + 1 shift, assign souls, dispatch.
    * Used by the FrontDesk's gt_sling_batch tool.
    */
   async slingShift(input: {
@@ -3718,7 +3718,7 @@ export class DepartmentDO extends DurableObject<Env> {
       [shiftId, input.tasks.length, 0, null, featureBranch, mergeMode, stagedValue]
     );
 
-    // Push the shift feature branch to the remote so polecats can immediately
+    // Push the shift feature branch to the remote so souls can immediately
     // open PRs targeting it and the qualityAssurance can merge into it.
     const workstation = workstations.getWorkstation(this.sql, input.workstationId);
     if (workstation) {
@@ -3813,7 +3813,7 @@ export class DepartmentDO extends DurableObject<Env> {
 
     // Lazy assignment: tickets are created with no assignee. The reconciler's
     // reconcileTickets Rule 1 assigns agents to unblocked tickets on the next
-    // alarm tick. This avoids creating N polecats upfront for a shift
+    // alarm tick. This avoids creating N souls upfront for a shift
     // where only 1-3 tickets are unblocked initially (#1249).
     for (const ticketId of ticketIds) {
       const ticket = ticketOps.getTicket(this.sql, ticketId);

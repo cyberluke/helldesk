@@ -48,7 +48,7 @@ export default function Shift() {
         </div>
       )}
       {rows.filter(r => r.total > 0).length > 0 && (
-        <div className="grid" style={{ marginTop: 16 }}>
+        <div className="native-grid" style={{ marginTop: 16 }}>
           {rows.filter(r => r.total > 0).map(r => (
             <div className="card" key={r.id}>
               <h3>{short(r.id, 14)}</h3>

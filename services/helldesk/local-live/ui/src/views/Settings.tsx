@@ -8,10 +8,12 @@ const STAGES: Stage[] = ['mutation', 'review', 'adjudicate']
 const ENGINES = ['kilo', 'codex', 'openai'] as const
 interface StageSpec { engine?: string; providerID?: string; modelID?: string; baseURL?: string }
 function stageDefault(): Record<Stage, StageSpec> {
+  // No provider/model/baseURL pins: the effective Kilo model comes from
+  // kilo.json(c), so a global model change propagates to every stage.
   return {
-    mutation: { engine: 'kilo', providerID: 'litellm-edge', modelID: 'differential_sseproxy', baseURL: 'http://localhost:4000/v1' },
-    review: { engine: 'kilo', providerID: 'litellm-edge', modelID: 'differential_sseproxy', baseURL: 'http://localhost:4000/v1' },
-    adjudicate: { engine: 'kilo', providerID: 'litellm-edge', modelID: 'differential_sseproxy', baseURL: 'http://localhost:4000/v1' },
+    mutation: { engine: 'kilo' },
+    review: { engine: 'kilo' },
+    adjudicate: { engine: 'kilo' },
   }
 }
 function cloneMatrix(m: Record<Stage, StageSpec>): Record<Stage, StageSpec> {
@@ -52,7 +54,7 @@ export default function SettingsView() {
   return (
     <div>
       <div className="section-title" style={{ margin: '0 0 12px' }}>⚙ Settings</div>
-      <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))' }}>
+      <div className="native-grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))' }}>
         <div className="card">
           <h3>Department / workstation (local-live)</h3>
           <p className="muted">Point the department at a filesystem repo (local-git adapter).</p>
@@ -79,7 +81,7 @@ export default function SettingsView() {
                 </div>
                 <div className="field" style={{ marginBottom: 6 }}>
                   <label>Provider / model</label>
-                  <input value={s.modelID ?? ''} onChange={e => setStage(stage, { modelID: e.target.value, providerID: e.target.value.includes('/') ? e.target.value.split('/')[0] : s.providerID })} placeholder="differential_sseproxy" />
+                  <input value={s.modelID ?? ''} onChange={e => setStage(stage, { modelID: e.target.value, providerID: e.target.value.includes('/') ? e.target.value.split('/')[0] : s.providerID })} placeholder="inherit Kilo model" />
                 </div>
                 <div className="field">
                   <label>Base URL (optional, overrides provider)</label>

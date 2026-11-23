@@ -1,4 +1,4 @@
--- CyberLuke Local HELLDESK schema (v3) — bank-grade service-owned event journal.
+-- HELLDESK Local schema (v3) — bank-grade service-owned event journal.
 -- ADDITIVE migration: preserves all v1/v2 data/jobs/reports/epochs.
 -- Adds a durable plugin->daemon event journal (idempotent, ack/reply, resume),
 -- plus per-host high-water marks and protocol lockstep. user_version 2 -> 3.

@@ -10,7 +10,7 @@
  * visible — the durable fix to the mutation engine.
  *
  * Usage:
- *   bun scripts/kilo-mutation-boot.trace.ts  [--provider litellm-edge] [--model differential_sseproxy]
+ *   bun scripts/kilo-mutation-boot.trace.ts  [--provider openai-compatible] [--model demo-model]
  *
  * It creates a session in cwd and issues one prompt, then prints the server
  * log tail. This is a DIAGNOSTIC harness; it does not mutate anything.
@@ -45,8 +45,8 @@ function sdkConfig(providerID: string, modelID: string, baseURL: string, directo
   };
 }
 
-const provider = process.env.GT_TRACE_PROVIDER ?? 'litellm-edge';
-const model = process.env.GT_TRACE_MODEL ?? 'differential_sseproxy';
+const provider = process.env.GT_TRACE_PROVIDER ?? 'openai-compatible';
+const model = process.env.GT_TRACE_MODEL ?? 'demo-model';
 const baseURL = process.env.GT_TRACE_BASE_URL ?? 'http://127.0.0.1:4000/v1';
 const dir = process.cwd();
 

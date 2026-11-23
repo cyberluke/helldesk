@@ -2,7 +2,7 @@
 
 import { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTRPC } from '@/lib/trpc/utils';
 import { Button } from '@/components/Button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -91,72 +91,80 @@ export function DepartmentOverviewPageClient({ departmentId }: DepartmentOvervie
     ...trpc.helldesk.getDepartmentEvents.queryOptions({ departmentId, limit: 200 }),
     refetchInterval: 5_000,
   });
+  // Server-side 24h aggregate: the event feed is only the newest 200 rows, so it
+  // cannot honestly draw a whole-day chart on a busy journal. The snapshot
+  // aggregates the complete window in SQLite.
+  const observabilityQuery = useQuery({
+    ...trpc.helldesk.getDepartmentObservability.queryOptions({ departmentId }),
+    refetchInterval: 5_000,
+  });
 
   const workstations = workstationsQuery.data ?? [];
   const events = departmentEventsQuery.data ?? [];
 
-  const activityData = useMemo(() => bucketEventsOverTime(events), [events]);
+  const activityData = useMemo(() => {
+    const buckets = observabilityQuery.data?.events.perHour24h;
+    if (buckets && buckets.length > 0) {
+      return buckets.map(bucket => ({ time: bucket.hour, count: bucket.count }));
+    }
+    // Snapshot still loading or engine briefly unreachable: show the recent feed
+    // shape rather than a fabricated flat line.
+    return bucketEventsOverTime(events);
+  }, [observabilityQuery.data, events]);
 
-  // Fetch tickets for each workstation so stats reflect actual ticket state, not event counts.
-  const workstationTicketQueries = useQueries({
-    queries: workstations.map(workstation => ({
-      ...trpc.helldesk.listTickets.queryOptions({ workstationId: workstation.id }),
-      refetchInterval: 8_000,
-    })),
+  const events24h = observabilityQuery.data?.events.last24h ?? events.length;
+
+  // Department-wide ticket state (includes the department-scoped engine mission
+  // projection). Counting per-workstation lists would drop the missions and
+  // double-render them across seats.
+  const ticketsQuery = useQuery({
+    ...trpc.helldesk.listTickets.queryOptions({ departmentId }),
+    refetchInterval: 8_000,
   });
-
-  const workstationTicketData = workstationTicketQueries.map(q => q.data);
-  const allTickets = useMemo(() => {
-    return workstationTicketData.flatMap((data, i) => {
-      const workstation = workstations[i];
-      return data && workstation ? data : [];
-    });
-  }, [workstationTicketData, workstations]);
+  const allTickets = ticketsQuery.data ?? [];
 
   // Stats from actual ticket state (excluding agent tickets)
   const userTickets = allTickets.filter(b => b.type !== 'agent');
   const openTicketCount = userTickets.filter(b => b.status === 'open').length;
   const inProgressTicketCount = userTickets.filter(b => b.status === 'in_progress').length;
   const closedTicketCount = userTickets.filter(b => b.status === 'closed').length;
-  const escalationsCount = events.filter(e => e.event_type === 'escalated').length;
+  // Escalations are a ticket fact, not a display bucket. Counting the old coarse
+  // event label both undercounted and broke when raw engine event types arrived.
+  const escalationsCount = userTickets.filter(ticket => ticket.type === 'escalation').length;
 
-  // Fetch agents for each workstation to populate the recent agents section.
-  // useQueries accepts a dynamic-length array (unlike useQuery in a loop).
-  const workstationAgentQueries = useQueries({
-    queries: workstations.map(workstation => ({
-      ...trpc.helldesk.listAgents.queryOptions({ workstationId: workstation.id }),
-      refetchInterval: 8_000,
-    })),
+  // Department crew roster: engine workers are department-scoped (no seat), so
+  // fanning out per workstation duplicated the same people on every seat page.
+  const departmentAgentsQuery = useQuery({
+    ...trpc.helldesk.listDepartmentAgents.queryOptions({ departmentId }),
+    refetchInterval: 8_000,
   });
+  const departmentAgents = departmentAgentsQuery.data ?? [];
 
-  const workstationAgentData = workstationAgentQueries.map(q => q.data);
   const agentsByWorkstation = useMemo(() => {
     const map: Record<string, Agent[]> = {};
-    workstationAgentData.forEach((data, i) => {
-      const workstation = workstations[i];
-      if (data && workstation) map[workstation.id] = data;
-    });
+    for (const agent of departmentAgents) {
+      if (!agent.workstation_id) continue;
+      (map[agent.workstation_id] ??= []).push(agent);
+    }
     return map;
-  }, [workstationAgentData, workstations]);
+  }, [departmentAgents]);
 
   const recentAgents = useMemo(() => {
-    const agents: Array<Agent & { workstationName: string; workstationId: string }> = [];
-    for (const [workstationId, workstationAgents] of Object.entries(agentsByWorkstation)) {
-      const workstation = workstations.find(r => r.id === workstationId);
-      if (workstation) {
-        for (const agent of workstationAgents) {
-          agents.push({ ...agent, workstationName: workstation.name, workstationId: workstation.id });
-        }
-      }
-    }
-    // Sort by last_activity_at descending, then by created_at
-    agents.sort((a, b) => {
-      const aTime = a.last_activity_at ?? a.created_at;
-      const bTime = b.last_activity_at ?? b.created_at;
-      return new Date(bTime).getTime() - new Date(aTime).getTime();
-    });
-    return agents.slice(0, 5);
-  }, [agentsByWorkstation, workstations]);
+    const agents = [...departmentAgents]
+      .sort((a, b) => {
+        const aTime = a.last_activity_at ?? a.created_at;
+        const bTime = b.last_activity_at ?? b.created_at;
+        return new Date(bTime).getTime() - new Date(aTime).getTime();
+      })
+      .slice(0, 5);
+    return agents.map(agent => ({
+      ...agent,
+      workstationId: agent.workstation_id ?? undefined,
+      workstationName: agent.workstation_id
+        ? (workstations.find(w => w.id === agent.workstation_id)?.name ?? 'Workstation')
+        : 'Department',
+    }));
+  }, [departmentAgents, workstations]);
 
   const deleteWorkstation = useMutation(
     trpc.helldesk.deleteWorkstation.mutationOptions({
@@ -239,7 +247,7 @@ export function DepartmentOverviewPageClient({ departmentId }: DepartmentOvervie
                   Activity — 24h
                 </span>
               </div>
-              <span className="font-mono text-[11px] text-white/30">{events.length} events</span>
+              <span className="font-mono text-[11px] text-white/30">{events24h} events / 24h</span>
             </div>
             <div className="h-[100px]">
               {activityData.length > 0 ? (
@@ -290,7 +298,7 @@ export function DepartmentOverviewPageClient({ departmentId }: DepartmentOvervie
             </div>
             <ActivityFeedView
               departmentId={departmentId}
-              events={events.slice(-80)}
+              events={events.slice(0, 80)}
               isLoading={departmentEventsQuery.isLoading}
               onEventClick={event => openDrawer({ type: 'event', event })}
             />
@@ -318,7 +326,7 @@ export function DepartmentOverviewPageClient({ departmentId }: DepartmentOvervie
             {workstations.length === 0 && !workstationsQuery.isLoading && (
               <div className="rounded-xl border border-dashed border-white/10 p-6 text-center">
                 <GitBranch className="mx-auto mb-2 size-6 text-white/20" />
-                <p className="text-xs text-white/40">No workstations yet. Connect a repo to get started.</p>
+                <p className="text-xs text-white/40">No workstations yet. Create one to give the crew an execution seat.</p>
                 <button
                   onClick={() => setIsCreateWorkstationOpen(true)}
                   className="mt-3 inline-flex items-center gap-1 rounded-md bg-white/[0.06] px-3 py-1.5 text-xs text-white/60 transition-colors hover:bg-white/[0.1] hover:text-white/80"
@@ -366,7 +374,7 @@ export function DepartmentOverviewPageClient({ departmentId }: DepartmentOvervie
                     </button>
                   </div>
                   <div className="mt-2 max-w-full truncate font-mono text-[10px] text-white/25">
-                    {workstation.git_url}
+                    {workstation.git_url || 'workspace routed in Task Studio'}
                   </div>
                 </motion.div>
               ))}

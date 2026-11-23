@@ -234,7 +234,7 @@ footer{margin-top:40px;border-top:1px solid var(--line);padding-top:14px;color:v
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
       <div class="card"><h3>🧮 Workstations</h3><p class="muted">repositories & configs</p><b class="mono" id="statWorkstations" style="font-size:26px">–</b></div>
       <div class="card"><h3>🎯 Tasks</h3><p class="muted">tickets open + in-flight</p><b class="mono" id="statTickets" style="font-size:26px">–</b></div>
-      <div class="card"><h3>🤖 Agents</h3><p class="muted">polecats · qualityAssurance · frontDesk</p><b class="mono" id="statAgents" style="font-size:26px">–</b></div>
+      <div class="card"><h3>🤖 Agents</h3><p class="muted">souls · qualityAssurance · frontDesk</p><b class="mono" id="statAgents" style="font-size:26px">–</b></div>
       <div class="card"><h3>🚚 Shift</h3><p class="muted">active missions</p><b class="mono" id="statShifts" style="font-size:26px">–</b></div>
     </div>
 
@@ -584,6 +584,8 @@ function renderConfig(){
     ['daemon', cfg.daemon, 'daemon'],
     ['policy', cfg.policy, 'policy'],
     ['autonomy', cfg.autonomy, 'autonomy'],
+    // Context tier ladder (32K..1M) — detection/override knobs are live.
+    ['context', cfg.context, 'context'],
   ];
   const build = (secKey, obj, prefix) => {
     for (const k of Object.keys(obj||{})) {
@@ -626,8 +628,8 @@ function renderField(prefix, label, value, applies, secret){
   return d;
 }
 function collectConfigPatch(){
-  const patch = { daemon:{}, policy:{}, autonomy:{}, workspaces: undefined };
-  const out = { daemon: patch.daemon, policy: patch.policy, autonomy: patch.autonomy };
+  const patch = { daemon:{}, policy:{}, autonomy:{}, context:{}, workspaces: undefined };
+  const out = { daemon: patch.daemon, policy: patch.policy, autonomy: patch.autonomy, context: patch.context };
   document.querySelectorAll('#cfgGrid input,#cfgGrid textarea').forEach((el)=>{
     const prefix = el.getAttribute('data-prefix'); if(!prefix) return;
     const [sec, ...rest] = prefix.split('.');
@@ -646,7 +648,7 @@ function collectConfigPatch(){
       out[sec][key] = v;
     }
   });
-  return ({ daemon: out.daemon, policy: out.policy, autonomy: out.autonomy, workspaces: patch.workspaces });
+  return ({ daemon: out.daemon, policy: out.policy, autonomy: out.autonomy, context: out.context, workspaces: patch.workspaces });
 }
 async function loadConfig(){
   const r = await j('/api/v1/config');

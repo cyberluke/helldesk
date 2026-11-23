@@ -39,7 +39,7 @@ export default function Overview() {
 
   return (
     <div>
-      <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', marginBottom: 18 }}>
+      <div className="native-grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', marginBottom: 18 }}>
         <div className="card"><h3>🏛 Projects</h3><p className="muted">missive missions on NAI-Lattice</p><div className="stat">{projects.length}</div></div>
         <div className="card"><h3>📌 Primary tickets</h3><p className="muted">serial primary tasks</p><div className="stat">{tickets.length}</div></div>
         <div className="card"><h3>🟢 Open</h3><p className="muted">queued + active</p><div className="stat">{open + inProg}</div></div>
@@ -63,7 +63,7 @@ export default function Overview() {
       {projects.length > 0 && (
         <div style={{ marginTop: 22 }}>
           <div className="section-title" style={{ marginBottom: 10 }}>Projects</div>
-          <div className="grid">
+          <div className="native-grid">
             {projects.map(p => (
               <div className="card" key={p.project_id}>
                 <h3>{p.name || short(p.project_id)}</h3>

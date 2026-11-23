@@ -1161,7 +1161,7 @@ async function startAgentImpl(
 
     // Only the frontDesk resumes — it's a persistent conversational agent whose
     // session history should survive container evictions. Non-front-desk agents
-    // (polecats, refineries, triage) always get fresh sessions since they
+    // (souls, refineries, triage) always get fresh sessions since they
     // work on a new ticket each dispatch.
     let sessionId = '';
     let resumed = false;
@@ -1422,7 +1422,7 @@ export async function sendMessage(agentId: string, prompt: string): Promise<void
 
   // front-desk-only: snapshot kilo.db immediately after the user message is
   // accepted so the message survives a container crash mid-response.
-  // Polecats/refineries/triage have different session semantics (fresh
+  // Souls/refineries/triage have different session semantics (fresh
   // session per dispatch) and rely on exit/drain snapshots.
   //
   // Prefer process.env.HELLDESK_CONTAINER_TOKEN over agent.helldeskContainerToken:

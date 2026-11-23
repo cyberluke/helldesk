@@ -67,9 +67,9 @@ describe('loadMergedGlobalConfig (deep-merge, NOT newest-file-wins)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'gt-cfg-'));
     const restore = isolate(dir);
     try {
-      writeFileSync(join(dir, 'kilo.jsonc'), ['// head', '{', '  "model": "litellm-edge/differential_sseproxy", // default', '  "default_agent": "hakakatoni-ultra",', '}', '// tail'].join('\n'), 'utf8');
+      writeFileSync(join(dir, 'kilo.jsonc'), ['// head', '{', '  "model": "openai-compatible/demo-model", // default', '  "default_agent": "hakakatoni-ultra",', '}', '// tail'].join('\n'), 'utf8');
       const merged = loadMergedGlobalConfig();
-      expect(merged.model).toBe('litellm-edge/differential_sseproxy');
+      expect(merged.model).toBe('openai-compatible/demo-model');
       expect(merged.default_agent).toBe('hakakatoni-ultra');
     } finally {
       restore();

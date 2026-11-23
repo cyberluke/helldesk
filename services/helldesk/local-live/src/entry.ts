@@ -3,7 +3,7 @@
  *
  * Serves:
  *  - the full local HELLDESK control plane (reusing the federated handlers)
- *  - the NAI ExcellenceGovernor one-stop dashboard at `/`
+ *  - the unified HELLDESK desktop at `/helldesk` (`/` redirects there)
  *  - NAI Lattice token/secret fabric
  *
  * Localhost, single-user: no Cloudflare, no billing, no Sentry, no auth.
@@ -24,7 +24,7 @@ import { handleCreateSpecProject, handleGetExcellenceGovernor, handleSetTicketCo
 import { handleBreakRoomSteer, bridgeRoomActivity, type BreakRoomCtx } from '../core/handlers/break-room-steer.handler';
 import type { RoomChatRow } from '../core/breakRoom/room';
 import type { RuntimeEvent } from '../core/runtime/local-reconciler';
-import {steerLocalMission} from '../core/runtime/mission-dispatch';
+import { setMissionReviewControls, steerLocalMission } from '../core/runtime/mission-dispatch';
 import {handleOperatorNudge} from '../core/handlers/operator-console.handler';
 import {initializeKiloDiscovery, handleGetKiloConfig, handleReloadKiloConfig} from '../core/handlers/kilo-config.handler';
 
@@ -82,7 +82,7 @@ function controlPlaneAddr(): { port: number; token: string } | null {
     const port = cfg.daemon?.port ?? 4790;
     let token = cfg.daemon?.token ?? '';
     if (!token) {
-      const dataDir = cfg.daemon?.dataDir ?? join(process.env.LOCALAPPDATA ?? '', 'CyberLuke', 'LocalGasDepartment');
+      const dataDir = cfg.daemon?.dataDir ?? join(process.env.LOCALAPPDATA ?? '', 'HELLDESK', 'LocalDepartment');
       const tok = join(dataDir, 'token');
       if (existsSync(tok)) token = readFileSync(tok, 'utf-8').trim();
     }
@@ -96,14 +96,89 @@ const runtime = createLocalRuntime(DATA_ROOT);
 const env: HelldeskEnv = buildHelldeskEnv(runtime);
 const app = new Hono<HelldeskAppEnv>();
 app.use('*', cors());
+// Hard stability guard: a single request handler that throws MUST NOT kill the
+// whole local-live process (the operator console). Without app.onError, Hono
+// rethrows the exception from app.fetch, which Bun.serve's fetch() propagates
+// and the Bun process EXITS — this is the root cause of the recurring
+// 'local-live bg process keeps exiting (hono-base.js:287)' crashes. Convert any
+// handler exception into a 500 JSON so the dashboard survives a bad request.
+app.onError((err, c) => {
+  console.error('[local-helldesk] handler error:', err && err.message ? err.message : String(err));
+  try {
+    return c.json({ success: false, error: (err && err.message) || String(err) }, 500);
+  } catch {
+    return new Response(JSON.stringify({ success: false, error: 'server error' }), { status: 500, headers: { 'content-type': 'application/json' } });
+  }
+});
 initializeKiloDiscovery();
 app.get('/api/kilo/config', handleGetKiloConfig);
 app.post('/api/kilo/config/reload', handleReloadKiloConfig);
 
+// ── REAL operator chat (mission transcript + steering) ───────────────────────
+// The console must show the mission's ACTUAL Kilo session messages. Those live
+// in the control plane (:4790) and need its bearer token, so proxy them here
+// (same trust boundary as the other control-plane relays).
+async function missionProxy(c: any, method: 'GET' | 'POST', suffix: '/chat' | '/resume' | '/cancel'): Promise<Response> {
+  const addr = controlPlaneAddr();
+  if (!addr) return c.json({ success: false, error: 'control_plane_unavailable' }, 503);
+  const missionId = c.req.param('missionId');
+  const target = new URL(`http://127.0.0.1:${addr.port}/v1/missions/${encodeURIComponent(missionId)}${suffix}`);
+  for (const [k, v] of new URL(c.req.url).searchParams) target.searchParams.set(k, v);
+  const headers: Record<string, string> = {};
+  if (addr.token) headers.Authorization = `Bearer ${addr.token}`;
+  let body: string | undefined;
+  if (method === 'POST') {
+    headers['Content-Type'] = 'application/json';
+    body = (await c.req.text()) || '{}';
+  }
+  try {
+    const res = await fetch(target, { method, headers, body });
+    const text = await res.text();
+    return new Response(text, {
+      status: res.status,
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    });
+  } catch (err) {
+    return c.json({ success: false, error: 'control_plane_unreachable', message: err instanceof Error ? err.message : String(err) }, 502);
+  }
+}
+app.get('/api/missions/:missionId/chat', (c) => missionProxy(c, 'GET', '/chat'));
+app.post('/api/missions/:missionId/chat', (c) => missionProxy(c, 'POST', '/chat'));
+// Explicit operator recovery for a blocked/cancelled mission (engine /resume).
+app.post('/api/missions/:missionId/resume', (c) => missionProxy(c, 'POST', '/resume'));
+// Operator discard: cancel the engine mission (then the board archives it).
+app.post('/api/missions/:missionId/cancel', (c) => missionProxy(c, 'POST', '/cancel'));
+
 // Passive room inventory: opening the operator UI must not start a FrontDesk/model.
 app.get('/api/departments/:departmentId/room', async (c) => {
-  const department = runtime.getDepartment(c.req.param('departmentId'));
-  return c.json({success:true,data:{agents:await department.listAgents(),tickets:await department.listTickets({}),workstations:await department.listWorkstations()}});
+  try {
+    const department = runtime.getDepartment(c.req.param('departmentId'));
+    if (!department) return c.json({ success: false, error: 'department_not_found' }, 404);
+    const [agents, tickets, workstations] = await Promise.all([
+      department.listAgents().catch(() => []),
+      department.listTickets({}).catch(() => []),
+      department.listWorkstations().catch(() => []),
+    ]);
+    return c.json({ success: true, data: { agents, tickets, workstations } });
+  } catch (e) {
+    return c.json({ success: false, error: (e as Error)?.message ?? 'room_unavailable' }, 500);
+  }
+});
+
+// All agents in a department: the live operator-room crew (Toast, FrontDesk,
+// mission soul agents — the fabric agents shown in the chat crew). The Agents tab
+// must show the WHOLE crew the operator can steer, not only workstation-registered
+// agents. This is the authoritative roster for the Agents page. department
+// .listAgents() already returns the full crew (same source as the room route).
+app.get('/api/departments/:departmentId/agents', async (c) => {
+  try {
+    const department = runtime.getDepartment(c.req.param('departmentId'));
+    if (!department) return c.json({ success: false, error: 'department_not_found' }, 404);
+    const agents = await department.listAgents().catch(() => []);
+    return c.json({ success: true, data: agents });
+  } catch (e) {
+    return c.json({ success: false, error: (e as Error)?.message ?? 'agents_unavailable' }, 500);
+  }
 });
 
 // departmentId/workstationId middleware: always set c.get('departmentId')/c.get('workstationId').
@@ -124,7 +199,9 @@ async function departmentDO(c: { env: HelldeskEnv }, departmentId: string) {
 import { handleCreateDepartment, handleListDepartments, handleGetDepartment, handleCreateWorkstation, handleGetWorkstation, handleListWorkstations, handleDeleteWorkstation } from '../core/handlers/departments.handler';
 import { resSuccess, resError } from '../core/util/res.util';
 import { z } from 'zod';
-import { handleCreateTicket, handleListTickets, handleGetTicket, handleUpdateTicketStatus, handleCloseTicket, handleSlingTicket, handleDeleteTicket } from '../core/handlers/workstation-tickets.handler';
+import { handleCreateTicket, handleListTickets, handleGetTicket, handleUpdateTicketStatus, handleCloseTicket, handleSlingTicket, handleDeleteTicket, handleSetTicketSize } from '../core/handlers/workstation-tickets.handler';
+import { handleListTicketEvents } from '../core/handlers/workstation-ticket-events.handler';
+import { handleAppendAgentEvent, handleGetAgentEvents } from '../core/handlers/workstation-agent-events.handler';
 import { handleRegisterAgent, handleListAgents, handleGetAgent, handleDeleteAgent, handleGetOrCreateAgent, handlePrime, handleAgentDone, handleAgentCompleted, handleWriteCheckpoint, handleCheckMemo, handleHeartbeat, handleUpdateAgentStatusMessage, handleHookTicket, handleUnhookTicket, handleAgentWaiting, handleRequestChanges, handleGetPendingNudges, handleNudge, handleNudgeDelivered } from '../core/handlers/workstation-agents.handler';
 import { handleCreateShift } from '../core/handlers/department-shifts.handler';
 import { handleGetDepartmentConfig, handleUpdateDepartmentConfig } from '../core/handlers/department-config.handler';
@@ -178,10 +255,12 @@ app.get('/api/departments/:departmentId/workstations/:workstationId', async (c) 
 });
 app.post('/api/departments/:departmentId/workstations', async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  const parsed = z.object({ name: z.string().min(1), git_url: z.string().optional(), default_branch: z.string().optional() }).safeParse(body);
+  // A workstation is a crew seat, not a repo: locally the workspace path is
+  // routed per task in Task Studio, so a Git URL is optional.
+  const parsed = z.object({ name: z.string().trim().min(1).max(64), git_url: z.string().optional(), default_branch: z.string().optional() }).safeParse(body);
   if (!parsed.success) return c.json(resError('name is required'), 400);
   const t = await departmentDO(c, c.req.param('departmentId'));
-  const workstation = await t.addWorkstation({ workstationId: newWorkstationId(), name: parsed.data.name, gitUrl: parsed.data.git_url ?? '', defaultBranch: parsed.data.default_branch ?? 'main' });
+  const workstation = await t.addWorkstation({ workstationId: newWorkstationId(), name: parsed.data.name, gitUrl: parsed.data.git_url ?? '', defaultBranch: parsed.data.default_branch || 'main' });
   return c.json(resSuccess(workstation), 201);
 });
 app.delete('/api/departments/:departmentId/workstations/:workstationId', async (c) => {
@@ -191,6 +270,34 @@ app.delete('/api/departments/:departmentId/workstations/:workstationId', async (
 });
 
 // tickets
+// Department-wide board: includes department-scoped engine missions. Seat boards
+// (`/workstations/:id/tickets`) stay filtered to that workstation's own work.
+app.get('/api/departments/:departmentId/tickets', (c) => handleListTickets(c, {}));
+app.post('/api/departments/:departmentId/tickets/archive', async (c) => {
+  const departmentId = c.req.param('departmentId');
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = z.object({
+    ticketIds: z.array(z.string().min(1)).max(1000),
+    archived: z.boolean().optional(),
+  }).safeParse(body);
+  if (!parsed.success) return c.json(resError('ticketIds is required'), 400);
+  const department = runtime.getDepartment(departmentId);
+  const archived = parsed.data.archived !== false;
+  const count = await department.archiveTickets(parsed.data.ticketIds, archived);
+  return c.json(resSuccess({ archived, count }));
+});
+app.delete('/api/departments/:departmentId/tickets/:ticketId', async (c) => {
+  const departmentId = c.req.param('departmentId');
+  const ticketId = c.req.param('ticketId');
+  const department = runtime.getDepartment(departmentId);
+  const ticket = await department.getTicketAsync(ticketId).catch(() => null);
+  if (ticket) await department.deleteTicket(ticketId);
+  await department.archiveTickets([ticketId], false).catch(() => 0);
+  return c.json(resSuccess({ deleted: !!ticket }));
+});
+// Department-level status move (mission cards have no workstation binding; the
+// handler routes mis_* to the mission controller by ticket id).
+app.patch('/api/departments/:departmentId/tickets/:ticketId/status', (c) => handleUpdateTicketStatus(c, { workstationId: '', ticketId: c.req.param('ticketId') }));
 app.post('/api/departments/:departmentId/workstations/:workstationId/tickets', (c) => handleCreateTicket(c, c.req.param()));
 app.get('/api/departments/:departmentId/workstations/:workstationId/tickets', (c) => handleListTickets(c, c.req.param()));
 app.get('/api/departments/:departmentId/workstations/:workstationId/tickets/:ticketId', (c) => handleGetTicket(c, c.req.param()));
@@ -198,6 +305,11 @@ app.patch('/api/departments/:departmentId/workstations/:workstationId/tickets/:t
 app.post('/api/departments/:departmentId/workstations/:workstationId/tickets/:ticketId/close', (c) => handleCloseTicket(c, c.req.param()));
 app.post('/api/departments/:departmentId/workstations/:workstationId/sling', (c) => handleSlingTicket(c, c.req.param()));
 app.delete('/api/departments/:departmentId/workstations/:workstationId/tickets/:ticketId', (c) => handleDeleteTicket(c, c.req.param()));
+// Durable event APIs were implemented but never mounted in local-live. The
+// federated Observability/Drawers already call these exact contracts.
+app.get('/api/departments/:departmentId/workstations/:workstationId/events', (c) => handleListTicketEvents(c, c.req.param()));
+app.post('/api/departments/:departmentId/workstations/:workstationId/agent-events', (c) => handleAppendAgentEvent(c, c.req.param()));
+app.get('/api/departments/:departmentId/workstations/:workstationId/agents/:agentId/events', (c) => handleGetAgentEvents(c, c.req.param()));
 
 // agents
 app.post('/api/departments/:departmentId/workstations/:workstationId/agents', (c) => handleRegisterAgent(c, c.req.param()));
@@ -219,8 +331,48 @@ app.post('/api/departments/:departmentId/workstations/:workstationId/agents/:age
 app.post('/api/departments/:departmentId/workstations/:workstationId/agents/:agentId/nudges/:nudgeId/delivered', (c) => handleNudgeDelivered(c, c.req.param()));
 app.post('/api/departments/:departmentId/workstations/:workstationId/agents/:agentId/request-changes', (c) => handleRequestChanges(c, c.req.param()));
 
-// memo
+// memo — durable agent mailbox. Memos are message tickets, so expose the
+// department-level CRUD surface the desktop UI needs in addition to the legacy
+// workstation send endpoint used by agents.
 app.post('/api/departments/:departmentId/workstations/:workstationId/memo', (c) => handleSendMemo(c, c.req.param()));
+app.get('/api/departments/:departmentId/memos', async (c) => {
+  const department = runtime.getDepartment(c.req.param('departmentId'));
+  const memos = (await department.listTickets({ type: 'message' })).filter(ticket => ticket.type === 'message');
+  return c.json(resSuccess(memos));
+});
+app.post('/api/departments/:departmentId/memos', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = z.object({
+    to_agent_id: z.string().min(1),
+    subject: z.string().min(1),
+    body: z.string().min(1),
+    from_agent_id: z.string().min(1).default('operator'),
+  }).safeParse(body);
+  if (!parsed.success) return c.json(resError('to_agent_id, subject and body are required'), 400);
+  const department = runtime.getDepartment(c.req.param('departmentId'));
+  await department.sendMemo(parsed.data);
+  return c.json(resSuccess({ sent: true }), 201);
+});
+app.patch('/api/departments/:departmentId/memos/:memoId', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = z.object({ subject: z.string().min(1).optional(), body: z.string().min(1).optional() }).refine(v => v.subject !== undefined || v.body !== undefined).safeParse(body);
+  if (!parsed.success) return c.json(resError('subject or body is required'), 400);
+  const department = runtime.getDepartment(c.req.param('departmentId'));
+  const current = await department.getTicketAsync(c.req.param('memoId'));
+  if (!current || current.type !== 'message') return c.json(resError('Memo not found'), 404);
+  const updated = await department.updateTicket(c.req.param('memoId'), {
+    ...(parsed.data.subject ? { title: parsed.data.subject } : {}),
+    ...(parsed.data.body ? { body: parsed.data.body } : {}),
+  });
+  return c.json(resSuccess(updated));
+});
+app.delete('/api/departments/:departmentId/memos/:memoId', async (c) => {
+  const department = runtime.getDepartment(c.req.param('departmentId'));
+  const current = await department.getTicketAsync(c.req.param('memoId'));
+  if (!current || current.type !== 'message') return c.json(resError('Memo not found'), 404);
+  await department.deleteTicket(c.req.param('memoId'));
+  return c.json(resSuccess({ deleted: true }));
+});
 
 // review queue
 app.post('/api/departments/:departmentId/workstations/:workstationId/review-queue', (c) => handleSubmitToReviewQueue(c, c.req.param()));
@@ -377,7 +529,58 @@ app.post('/api/departments/:departmentId/projects', async (c) => {
   );
 });
 app.get('/api/departments/:departmentId/excellenceGovernor', (c) => handleGetExcellenceGovernor(c as Ctx, { departmentId: c.req.param('departmentId') }));
-app.put('/api/departments/:departmentId/tickets/:ticketId/controls', (c) => handleSetTicketControls(c as Ctx, { departmentId: c.req.param('departmentId'), ticketId: c.req.param('ticketId') }));
+app.put('/api/departments/:departmentId/tickets/:ticketId/controls', async (c) => {
+  const departmentId = c.req.param('departmentId');
+  return handleSetTicketControls(
+    c as Ctx,
+    { departmentId, ticketId: c.req.param('ticketId') },
+    {
+      getTicket: async (ticketId) => {
+        try {
+          return await runtime.getDepartment(departmentId).getTicketAsync(ticketId);
+        } catch {
+          return null;
+        }
+      },
+      updateTicketControls: async (ticketId, controls) => {
+        const department = runtime.getDepartment(departmentId);
+        const ticket = await department.getTicketAsync(ticketId);
+        if (!ticket) throw new Error(`ticket ${ticketId} not found`);
+        // Merge (never drop) the rest of the ticket metadata; LocalDepartment
+        // preserves local_repo_snapshot separately.
+        await department.updateTicket(ticketId, {
+          metadata: { ...(ticket.metadata ?? {}), break_room_controls: controls },
+        });
+      },
+      setMissionControls: (missionId, controls) => setMissionReviewControls(missionId, controls),
+    },
+  );
+});
+
+// Manual T-shirt size override for a LOCAL ticket. Mission tickets use
+// POST /api/v1/tickets/:id/size (engine contract).
+app.put('/api/departments/:departmentId/tickets/:ticketId/size', async (c) => {
+  const departmentId = c.req.param('departmentId');
+  return handleSetTicketSize(
+    c,
+    { ticketId: c.req.param('ticketId') },
+    {
+      getTicket: async (ticketId) => {
+        try {
+          return await runtime.getDepartment(departmentId).getTicketAsync(ticketId);
+        } catch {
+          return null;
+        }
+      },
+      updateTicketMetadata: async (ticketId, metadata) => {
+        const department = runtime.getDepartment(departmentId);
+        const ticket = await department.getTicketAsync(ticketId);
+        if (!ticket) throw new Error(`ticket ${ticketId} not found`);
+        await department.updateTicket(ticketId, { metadata });
+      },
+    },
+  );
+});
 
 // ── BreakRoom group-chat HITL operator ───────────────────────────────────────────
 // The human is an ASYNC, NON-BLOCKING peer. Agents are fully autonomous and
@@ -537,7 +740,11 @@ app.all('/api/v1/*', async (c) => {
   // Strip the dashboard-local prefix and map back to the control plane's /v1 root:
   //   /api/v1/config   ->  http://127.0.0.1:<cp.port>/v1/config
   const rest = c.req.path.replace(/^\/api\/v1/, '') || '/';
-  const upstream = new URL(`http://127.0.0.1:${cp.port}/v1${rest}`);
+  // `c.req.path` excludes the query string; without this the proxy silently
+  // dropped `?tail=N` / `?after=N` / `?since=...` and the engine fell back to
+  // its oldest-first defaults (the observability "stale events" bug).
+  const search = new URL(c.req.url).search;
+  const upstream = new URL(`http://127.0.0.1:${cp.port}/v1${rest}${search}`);
   try {
     const headers = new Headers(c.req.raw.headers);
     headers.set('Authorization', `Bearer ${cp.token}`);
@@ -584,9 +791,12 @@ app.post('/api/system/restart', async (c) => {
 });
 
 // ---------------------------------------------------------------- dashboard
-import { dashboardHtml, globalShellHtml } from './dashboard';
-app.get('/', async (c) => c.html(globalShellHtml()));
-app.get('/department', async (c) => c.html(dashboardHtml()));
+import { dashboardHtml } from './dashboard';
+// HELLDESK React is the product surface. The old standalone Department HTML is
+// retained only as an explicit legacy diagnostic route, never as a competing app.
+app.get('/', (c) => c.redirect('/helldesk/#/helldesk/default'));
+app.get('/department', (c) => c.redirect('/helldesk/#/helldesk/default'));
+app.get('/legacy/department', async (c) => c.html(dashboardHtml()));
 app.get('/health', (c) => c.json({ ok: true }));
 
 // ---------------------------------------------------------------- NAI-Lattice engine proxy
@@ -720,6 +930,9 @@ function handleIncomingChatMessage(departmentId: string, message: string): void 
 const server = Bun.serve<{ pty?: PtyWsData; chat?: ChatWsData; events?: EventsWsData }>({
   hostname: HOST,
   port: PORT,
+  // The mission-chat proxy waits on the control plane; the default 10s idle
+  // timeout killed the request and made the drawer's chat look empty.
+  idleTimeout: 30,
   fetch(req, server) {
     const url = new URL(req.url);
     if (req.headers.get('upgrade')?.toLowerCase() === 'websocket') {
@@ -747,16 +960,20 @@ const server = Bun.serve<{ pty?: PtyWsData; chat?: ChatWsData; events?: EventsWs
         if (upgraded) return undefined;
       }
     }
-    return app.fetch(req, env, { waitUntil: () => {}, passThroughOnException: () => {} } as never);
+    return Promise.resolve(app.fetch(req, env, { waitUntil: () => {}, passThroughOnException: () => {} } as never)).catch((err) => {
+      console.error('[local-helldesk] fetch handler error:', err && err.message ? err.message : String(err));
+      return new Response(JSON.stringify({ success: false, error: 'server error' }), { status: 500, headers: { 'content-type': 'application/json' } });
+    });
   },
   websocket: {
     open(ws) {
-      const data = ws.data as { pty?: PtyWsData; chat?: ChatWsData; events?: EventsWsData };
-      if (data?.pty) {
-        const conn = openConnection(ws, { departmentId: data.pty.departmentId, agentId: data.pty.agentId, ptyId: data.pty.ptyId, pty: ptyManager });
-        if (conn) wsPtyConnections.set(ws, conn);
-        return;
-      }
+      try {
+        const data = ws.data as { pty?: PtyWsData; chat?: ChatWsData; events?: EventsWsData };
+        if (data?.pty) {
+          const conn = openConnection(ws, { departmentId: data.pty.departmentId, agentId: data.pty.agentId, ptyId: data.pty.ptyId, pty: ptyManager });
+          if (conn) wsPtyConnections.set(ws, conn);
+          return;
+        }
       if (data?.chat) {
         // Subscribe this socket to mirrored chat events for the department.
         const f = chatFabricFor(data.chat.departmentId);
@@ -771,26 +988,42 @@ const server = Bun.serve<{ pty?: PtyWsData; chat?: ChatWsData; events?: EventsWs
       if (data?.events) {
         // Live stream of the colony reconciler's runtime events (ticket states,
         // analytics, invariants). This is the real broadcastTicketEvent fan-out.
-        const department = runtime.getDepartment(data.events.departmentId);
-        const unsub = department.eventBus.subscribe((event) => {
-          try {
-            ws.send(JSON.stringify({ type: 'runtime', departmentId: event.departmentId, event }));
-          } catch { /* socket gone */ }
-        });
-        wsEventUnsubs.set(ws, unsub);
+        try {
+          const department = runtime.getDepartment(data.events.departmentId);
+          const unsub = department.eventBus.subscribe((event) => {
+            try {
+              ws.send(JSON.stringify({ type: 'runtime', departmentId: event.departmentId, event }));
+            } catch { /* socket gone */ }
+          });
+          wsEventUnsubs.set(ws, unsub);
+        } catch {
+          // Department or eventBus may be mid-teardown (reconciler race). Never let
+          // an unguarded subscribe inside WS open take the whole process down.
+          ws.close(1011, 'runtime unavailable');
+        }
         return;
       }
       ws.close(1008, 'bad session');
+      } catch (err) {
+        // Any unguarded throw during WS open (e.g. race-during-teardown) must not
+        // kill the process; close the offending socket instead.
+        console.error('[local-helldesk] ws.open error:', err && (err as Error).message ? (err as Error).message : String(err));
+        try { ws.close(1011, 'open failed'); } catch { /* ignore */ }
+      }
     },
     message(ws, message) {
-      const data = ws.data as { pty?: PtyWsData; chat?: ChatWsData };
-      if (data?.pty) {
-        const bytes = typeof message === 'string' ? new TextEncoder().encode(message) : message;
-        ptyManager.write(data.pty.departmentId, data.pty.agentId, data.pty.ptyId, bytes);
-        return;
-      }
-      if (data?.chat) {
-        handleIncomingChatMessage(data.chat.departmentId, typeof message === 'string' ? message : new TextDecoder().decode(message));
+      try {
+        const data = ws.data as { pty?: PtyWsData; chat?: ChatWsData };
+        if (data?.pty) {
+          const bytes = typeof message === 'string' ? new TextEncoder().encode(message) : message;
+          ptyManager.write(data.pty.departmentId, data.pty.agentId, data.pty.ptyId, bytes);
+          return;
+        }
+        if (data?.chat) {
+          handleIncomingChatMessage(data.chat.departmentId, typeof message === 'string' ? message : new TextDecoder().decode(message));
+        }
+      } catch (err) {
+        console.error('[local-helldesk] ws.message error:', err && (err as Error).message ? (err as Error).message : String(err));
       }
     },
     close(ws) {

@@ -1,5 +1,6 @@
 import { describe, expect, it, afterEach } from 'bun:test';
 import { resolveModel, setModelCatalog, parseModelRef, ModelResolutionError } from '../../src/model-resolver';
+import { resolveMutationRunner } from '../../src/mutation-runner';
 
 afterEach(() => setModelCatalog(null));
 
@@ -32,5 +33,17 @@ describe('model resolver (no Kilo Gateway)', () => {
 
   it('throws without a resolvable model rather than guessing', () => {
     expect(() => resolveModel({ inheritFrom: 'none' })).toThrow(ModelResolutionError);
+  });
+
+  it('fails closed when the Kilo mutation runner has no effective model route', () => {
+    expect(() =>
+      resolveMutationRunner({
+        mutationRunner: 'kilo',
+        codexBin: '',
+        providerID: '',
+        modelID: '',
+        baseURL: '',
+      })
+    ).toThrow(/mutation-model-missing/);
   });
 });

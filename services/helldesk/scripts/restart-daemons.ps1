@@ -1,4 +1,4 @@
-# CyberLuke Local HELLDESK — FORCE-RESTART ALL DAEMONS (control plane + dashboard).
+# HELLDESK Local — FORCE-RESTART ALL DAEMONS (control plane + dashboard).
 #
 # Reusable operational block, invoked by the dashboard "Force-restart daemons"
 # CTA (via entry.ts /api/system/restart) so the whole local HELLDESK surface can
@@ -58,7 +58,7 @@ $localRoot = Split-Path -Parent (Split-Path -Parent $here)       # services/hell
 $liveRoot   = Join-Path $localRoot "local-live"                        # services/helldesk/local-live (dashboard)
 $repoRoot   = Get-RepoRoot
 $dataDir    = (Get-Content (Join-Path $localRoot "config.json") -ErrorAction SilentlyContinue | ConvertFrom-Json).daemon.dataDir
-if (-not $dataDir) { $dataDir = Join-Path $env:LOCALAPPDATA "CyberLuke\LocalGasDepartment" }
+if (-not $dataDir) { $dataDir = Join-Path $env:LOCALAPPDATA "HELLDESK\LocalDepartment" }
 
 Write-Host "[restart] repo root: $repoRoot"
 Write-Host "[restart] data dir : $dataDir"

@@ -29,6 +29,18 @@ export async function readOperatorRoom(departmentId: string): Promise<RoomState>
 }
 export const roomAgentId = (agent: RoomAgent) => agent.id || agent.ticket_id || agent.agent_id || ''
 
+/**
+ * True when a crew member is doing live work.
+ *
+ * The room projection exposes BOTH the crew status word and the engine
+ * checkpoint. A running engine checkpoint is authoritative liveness, so it
+ * counts even if a status word drifts (or an older daemon is still serving).
+ * The operator header must never read "0 working" for a producing mission.
+ */
+export const isAgentWorking = (agent: RoomAgent): boolean =>
+  agent.status === 'working' ||
+  (agent as { checkpoint?: { running?: boolean } | null }).checkpoint?.running === true
+
 export interface Ticket {
   ticket_id: string
   ticket_type?: string
@@ -205,29 +217,214 @@ export const local = {
 // ── Control-plane mission telemetry (proxied server-side; the browser never
 // holds the token). `<data>/missions` carries live ExcellenceGovernor mission state for
 // `mission`, so an actively-working agent is never silent in the operator-console.
+// NOTE: the control-plane /v1/missions returns CAMELCASE (missionId, verifiedAt,
+// updatedAt, blockedReason). The accessor normalizes to BOTH so callers (board +
+// observability) can read either shape without surprises.
 export interface ColonyMission {
   mission_id?: string
+  missionId?: string
   state?: string
   current_ticket_id?: string | null
+  currentTicketId?: string | null
   current_revision_id?: string | null
   updated_at?: string | null
+  updatedAt?: string | null
   verified_at?: string | null
+  verifiedAt?: string | null
   blocked_reason?: string | null
+  blockedReason?: string | null
+  revision_state?: string | null
+  revisionState?: string | null
+  review_job_state?: string | null
+  reviewJobState?: string | null
   objective?: string
   idempotency_key?: string
 }
+const normMissionId = (o: any): string => o?.mission_id ?? o?.missionId ?? ''
+const normMissionUpdated = (o: any): string | null => o?.updated_at ?? o?.updatedAt ?? null
+const normMissionVerified = (o: any): string | null => o?.verified_at ?? o?.verifiedAt ?? null
+const normMissionBlocked = (o: any): string | null => o?.blocked_reason ?? o?.blockedReason ?? null
+
 export async function listColonyMissions(): Promise<ColonyMission[]> {
   const res = await fetch('/api/v1/missions', { signal: AbortSignal.timeout(8000) }).catch(() => null)
   if (!res || !res.ok) return []
   try {
-    const j = await res.json()
-    return Array.isArray(j) ? j : (j.missions ?? [])
+    const j = (await res.json()) as any
+    const raw = Array.isArray(j) ? j : (j.missions ?? []) as any[]
+    return raw.map((r) => ({
+      mission_id: normMissionId(r),
+      missionId: normMissionId(r),
+      state: r?.state,
+      current_ticket_id: r?.current_ticket_id ?? r?.currentTicketId ?? null,
+      currentTicketId: r?.current_ticket_id ?? r?.currentTicketId ?? null,
+      updated_at: normMissionUpdated(r),
+      updatedAt: normMissionUpdated(r),
+      verified_at: normMissionVerified(r),
+      verifiedAt: normMissionVerified(r),
+      blocked_reason: normMissionBlocked(r),
+      blockedReason: normMissionBlocked(r),
+      objective: r?.objective,
+      idempotency_key: r?.idempotency_key ?? r?.idempotencyKey,
+    }))
   } catch { return [] }
 }
 export async function getColonyMission(missionId: string): Promise<ColonyMission | null> {
   const res = await fetch(`/api/v1/missions/${encodeURIComponent(missionId)}`, { signal: AbortSignal.timeout(8000) }).catch(() => null)
   if (!res || !res.ok) return null
-  try { return (await res.json()).mission ?? null } catch { return null }
+  try {
+    const raw = ((await res.json()) as any)?.mission ?? null
+    if (!raw) return null
+    return {
+      mission_id: normMissionId(raw),
+      missionId: normMissionId(raw),
+      state: raw?.state,
+      current_ticket_id: raw?.current_ticket_id ?? raw?.currentTicketId ?? null,
+      updated_at: normMissionUpdated(raw),
+      updatedAt: normMissionUpdated(raw),
+      verified_at: normMissionVerified(raw),
+      verifiedAt: normMissionVerified(raw),
+      blocked_reason: normMissionBlocked(raw),
+      blockedReason: normMissionBlocked(raw),
+      objective: raw?.objective,
+    }
+  } catch { return null }
+}
+
+// ── Mission completion / acceptance / re-review (token injected by the proxy) ─
+export interface MissionReportRole {
+  role: string
+  providerID: string | null
+  modelID: string | null
+  status: string
+  startedAt: string | null
+  finishedAt: string | null
+  durationMs: number | null
+  tokensIn: number | null
+  tokensOut: number | null
+  cost: number | null
+  costRule?: string | null
+  costSource?: 'reported' | 'calculated' | null
+}
+export interface MissionReportFinding {
+  severity: string
+  confidence: string
+  title: string
+  file: string | null
+  lineStart: number | null
+  lineEnd: number | null
+  evidence: string
+  reviewerIds: string[]
+  adjudicated: number
+  adjudication: string | null
+}
+export interface MissionReport {
+  mission: {
+    missionId: string
+    state: string
+    objective: string
+    createdAt: string
+    updatedAt: string
+    verifiedAt: string | null
+    controls: Record<string, unknown>
+    humanAcceptance: 'accepted' | 'changes_requested' | null
+    humanAcceptedAt: string | null
+    humanAcceptanceNote: string | null
+    humanAcceptedBy: string | null
+    awaitingHumanAcceptance: boolean
+  }
+  tickets: Array<{
+    ticketId: string
+    title: string
+    executionState: string
+    verificationState: string
+    revisionId: string | null
+    revisionNo: number | null
+    revisionState: string | null
+    reviewJobId: string | null
+    reviewJobState: string | null
+    reviewResult: string | null
+    storyPoints: number | null
+    tshirtSize: string | null
+    sizeConfidence: string | null
+    sizeRationale: string | null
+    sizingState: string | null
+  }>
+  review: {
+    jobId: string | null
+    state: string | null
+    result: string | null
+    requestedAt: string | null
+    completedAt: string | null
+    revisionId: string | null
+    revisionNo: number | null
+    ticketId: string | null
+    policy: { controls: Record<string, unknown>; summary: string; reviewerA: boolean; reviewerB: boolean; governor: boolean } | null
+    roles: MissionReportRole[]
+    findings: MissionReportFinding[]
+    tokens: { input: number; output: number; total: number; cost: number | null; costPartial?: boolean }
+  }
+  gates: Array<{ gateKey: string; status: string; evaluator: string | null; checkedAt: string; evidenceRefs: unknown }>
+  evidence: Array<{
+    artifactId: string
+    kind: string
+    path: string | null
+    sha256: string
+    bytes: number
+    producer: string | null
+    command: string | null
+    exitCode: number | null
+    createdAt: string
+  }>
+  commits: { baseHash: string | null; headHash: string | null }
+  acceptanceHistory: Array<{ event_id: string; mission_id: string; decision: string; note: string | null; actor: string | null; created_at: string }>
+}
+
+async function missionJson<T>(path: string, body?: unknown, timeoutMs = 30000): Promise<T> {
+  const response = await fetch(path, {
+    signal: AbortSignal.timeout(timeoutMs),
+    ...(body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  })
+  const payload = (await response.json().catch(() => null)) as any
+  if (!response.ok) {
+    throw new Error(payload?.message ?? payload?.error ?? payload?.reason ?? `HTTP ${response.status}`)
+  }
+  return payload as T
+}
+
+export async function getMissionReport(missionId: string): Promise<MissionReport | null> {
+  try {
+    return await missionJson<MissionReport>(`/api/v1/missions/${encodeURIComponent(missionId)}/report`)
+  } catch {
+    return null
+  }
+}
+
+export async function submitMissionAcceptance(
+  missionId: string,
+  decision: 'accepted' | 'changes_requested',
+  note?: string,
+  actor = 'operator'
+): Promise<{ ok: boolean; decision: string; state: string }> {
+  return missionJson(`/api/v1/missions/${encodeURIComponent(missionId)}/acceptance`, { decision, note, actor })
+}
+
+export async function requestMissionReReview(
+  missionId: string
+): Promise<{ ok: boolean; action: string; jobId: string | null; reason?: string }> {
+  return missionJson(`/api/v1/missions/${encodeURIComponent(missionId)}/re-review`, {})
+}
+
+export async function updateMissionTicketSize(
+  ticketId: string,
+  tshirt: string
+): Promise<{ ok: boolean; ticketId: string; storyPoints: number; tshirtSize: string }> {
+  return missionJson(`/api/v1/tickets/${encodeURIComponent(ticketId)}/size`, { tshirt })
+}
+
+export async function requestTaskSizingBackfill(
+  limit = 10
+): Promise<{ ok: boolean; queued: number; sized: number; failed: number; remaining: number; running?: boolean }> {
+  return missionJson(`/api/v1/tasks/backfill-sizes`, { limit }, 120_000)
 }
 
 // ── Control-plane mission board (kanban source of truth) ────────────────────
@@ -311,15 +508,43 @@ export interface EngineWorkspace {
   exclude?: string[]
 }
 
+/** Tier-resolved budget returned by GET /api/v1/config (server-side truth). */
+export interface ContextBudgetView {
+  selection: string
+  tier: string
+  source: 'config-window' | 'config-tier' | 'kilo-jsonc' | 'default'
+  contextWindow: number
+  inputBudgetTokens: number
+  outputBudgetTokens: number
+  charsPerToken: number
+  promptUtilization: number
+  userPromptCharBudget: number
+  reviewDiffCharBudget: number
+  kiloConfigTransportLimitChars: number
+  detected?: { context?: number; input?: number; output?: number } | null
+}
+
+export interface EngineContextConfig {
+  tier?: string
+  /** `null` explicitly clears a previously persisted override. */
+  contextWindow?: number | null
+  charsPerToken?: number
+  promptUtilization?: number
+  /** `null` explicitly clears a previously persisted override. */
+  reservedOutputTokens?: number | null
+}
+
 export interface EngineConfigResponse {
   config?: {
     daemon?: Record<string, any>
     policy?: Record<string, any>
     autonomy?: Record<string, any>
+    context?: EngineContextConfig
     workspaces?: EngineWorkspace[]
   }
   meta?: Record<string, Record<string, 'live' | 'restart'>>
   path?: string
+  context_resolution?: ContextBudgetView
 }
 
 export interface EngineConfigPatchResult {
@@ -329,6 +554,7 @@ export interface EngineConfigPatchResult {
   rejected: Array<{ field: string; issues: string[] }>
   config_path?: string
   config?: Record<string, any>
+  context_resolution?: ContextBudgetView
 }
 
 export const runtimeConfig = {
@@ -366,7 +592,13 @@ export function short(id?: string | null, n = 8): string {
 
 /** Which NAI process enforces a task ('auto' = no override, default colony
  *  behavior). Stored as metadata.break_room_controls when not 'auto'. */
-export type Enforcer = 'auto' | 'excellenceGovernor' | 'soul' | 'reviewer'
+export type Enforcer = 'auto' | 'excellenceGovernor' | 'soul' | 'reviewer' | 'reviewerAndGovernor'
+
+/** Task shape selected in Task Studio and sent to the prompt enhancer. */
+export type TaskType = 'engine' | 'feature' | 'bugfix' | 'refactor' | 'extraction'
+export type WriteTarget = 'workspace' | 'output_repo'
+export type Delivery = 'startup' | 'production'
+export type EnhanceMode = 'text' | 'repos'
 
 export interface SourceRepoInput {
   id: string
@@ -376,12 +608,298 @@ export interface SourceRepoInput {
 }
 
 /** Map a chosen enforcer to metadata.break_room_controls. 'auto' sends no override,
- *  letting the colony/reconciler decide the default dispatch behavior. */
-const enforcerToControls = (e: Exclude<Enforcer, 'auto'>) => ({
-  agents: true,
-  reviewer: e === 'reviewer' || e === 'excellenceGovernor',
-  excellenceGovernor: e === 'excellenceGovernor',
+ *  letting the colony/reconciler decide the default dispatch behavior.
+ *
+ *  The enforcer picker now matches its label exactly: "Build + ExcellenceGovernor"
+ *  enables the governor stage ONLY (the A/B reviewer layer stays off until the
+ *  operator turns Reviewer A/B on in the Kanban card or task drawer). The
+ *  "HELLDESK Reviewer" enforcer enables the independent A/B reviewers and leaves
+ *  the governor stage off; "Souls" keeps the department default review policy. */
+export const enforcerToControls = (e: Exclude<Enforcer, 'auto'>) => {
+  if (e === 'excellenceGovernor') {
+    return { agents: true, reviewer: false, reviewerA: false, reviewerB: false, excellenceGovernor: true }
+  }
+  if (e === 'reviewer') {
+    return { agents: true, reviewer: true, reviewerA: true, reviewerB: true, excellenceGovernor: false }
+  }
+  if (e === 'reviewerAndGovernor') {
+    return { agents: true, reviewer: true, reviewerA: true, reviewerB: true, excellenceGovernor: true }
+  }
+  // Souls: implement + land under the department's default review policy.
+  return { agents: true }
+}
+
+// ── Prompt enhancer (Task Studio shape → enhanced spec) ────────────────────
+// The enhancer is an optional server-side assist: it rewrites/expands the
+// operator's spec using the task shape and the routed repos. It NEVER creates
+// a task; the operator reviews the result in EnhancePreview and applies it.
+
+/** One minimum-proof entry: the claim, the test that proves it, the evidence to capture. */
+export interface MinimumProofItem {
+  claim: string
+  test: string
+  evidence: string
+}
+
+/** The enhanced task contract returned by POST /api/v1/enhance. */
+export interface EnhancedSpec {
+  title: string
+  taskType: TaskType
+  writeTarget: WriteTarget
+  delivery: Delivery
+  spec: string
+  assumptions: string[]
+  questions: string[]
+  minimumProof: MinimumProofItem[]
+  notDoneIf: string[]
+  risks: string[]
+}
+
+/** Independent adversarial product-owner verdict shown at the approval gate. */
+export type QaVerdict = 'PASS' | 'REVISE' | 'REJECT' | 'UNAVAILABLE'
+export interface QaFinding {
+  severity: 'blocker' | 'major' | 'minor'
+  issue: string
+  evidence?: string
+  requiredChange?: string
+}
+export interface QaReview {
+  verdict: QaVerdict
+  summary: string
+  findings: QaFinding[]
+}
+
+const taskTypeSchema = z.enum(['engine', 'feature', 'bugfix', 'refactor', 'extraction'])
+const writeTargetSchema = z.enum(['workspace', 'output_repo'])
+const deliverySchema = z.enum(['startup', 'production'])
+
+const minimumProofItemSchema = z.object({
+  claim: z.string(),
+  test: z.string(),
+  evidence: z.string(),
+}).passthrough()
+
+const qaFindingSchema = z.object({
+  severity: z.enum(['blocker', 'major', 'minor']).default('major'),
+  issue: z.string(),
+  evidence: z.string().optional(),
+  requiredChange: z.string().optional(),
+}).passthrough()
+
+const qaReviewSchema = z.object({
+  verdict: z.enum(['PASS', 'REVISE', 'REJECT', 'UNAVAILABLE']),
+  summary: z.string().default(''),
+  findings: z.array(qaFindingSchema).default([]),
+}).passthrough()
+
+const enhancedSpecSchema = z.object({
+  title: z.string(),
+  taskType: taskTypeSchema,
+  writeTarget: writeTargetSchema,
+  delivery: deliverySchema,
+  spec: z.string(),
+  assumptions: z.array(z.string()).default([]),
+  questions: z.array(z.string()).default([]),
+  minimumProof: z.array(minimumProofItemSchema).default([]),
+  notDoneIf: z.array(z.string()).default([]),
+  risks: z.array(z.string()).default([]),
+}).passthrough()
+
+type EnhancedSpecWire = z.infer<typeof enhancedSpecSchema>
+
+/** Bounded, read-only repo profile the enhancer attaches for `repos` mode. */
+const repoProfileSummarySchema = z.object({
+  path: z.string(),
+  kind: z.string().optional(),
+  head: z.string().nullish(),
+  branch: z.string().nullish(),
+  dirtyFiles: z.number().nullish(),
+  trackedCount: z.number().nullish(),
+  topLevel: z.array(z.string()).optional(),
+  frameworks: z.array(z.string()).optional(),
+  scripts: z.record(z.string(), z.string()).optional(),
+  keyFiles: z.array(z.string()).optional(),
+}).passthrough()
+
+const enhanceAnalysisSchema = z.object({
+  workspace: repoProfileSummarySchema,
+  output: repoProfileSummarySchema.optional(),
+}).passthrough()
+export type EnhanceAnalysis = z.infer<typeof enhanceAnalysisSchema>
+
+const enhanceMetaSchema = z.object({
+  providerID: z.string().optional(),
+  modelID: z.string().optional(),
+  qaProviderID: z.string().optional(),
+  qaModelID: z.string().optional(),
+  tookMs: z.number().optional(),
+}).passthrough()
+export type EnhanceMeta = z.infer<typeof enhanceMetaSchema>
+
+const enhanceEnvelopeSchema = z.object({
+  ok: z.boolean().optional(),
+  success: z.boolean().optional(),
+  error: z.string().optional(),
+  message: z.string().optional(),
+  enhanced: enhancedSpecSchema.optional(),
+  result: enhancedSpecSchema.optional(),
+  qa: qaReviewSchema.optional(),
+  analysis: enhanceAnalysisSchema.optional(),
+  meta: enhanceMetaSchema.optional(),
+  data: z.unknown().optional(),
+}).passthrough()
+
+const enhanceRecordSchema = z.record(z.string(), z.unknown())
+
+const asEnhanceRecord = (value: unknown): Record<string, unknown> | null => {
+  const parsed = enhanceRecordSchema.safeParse(value)
+  return parsed.success ? parsed.data : null
+}
+
+const toEnhancedSpec = (wire: EnhancedSpecWire): EnhancedSpec => ({
+  title: wire.title,
+  taskType: wire.taskType,
+  writeTarget: wire.writeTarget,
+  delivery: wire.delivery,
+  spec: wire.spec,
+  assumptions: wire.assumptions,
+  questions: wire.questions,
+  minimumProof: wire.minimumProof.map((item) => ({ claim: item.claim, test: item.test, evidence: item.evidence })),
+  notDoneIf: wire.notDoneIf,
+  risks: wire.risks,
 })
+
+const enhanceErrorText = (payload: unknown, fallback: string): string => {
+  const record = asEnhanceRecord(payload)
+  const message = record?.message ?? record?.detail ?? record?.error
+  if (typeof message === 'string' && message.trim() && message !== 'invalid_body') return message
+  const issues = record?.issues
+  if (Array.isArray(issues)) {
+    const readable = issues.slice(0, 3).map((issue) => {
+      const item = asEnhanceRecord(issue)
+      const issueMessage = typeof item?.message === 'string' ? item.message : ''
+      if (!issueMessage) return ''
+      const path = Array.isArray(item?.path) ? item.path.filter((part) => typeof part === 'string').join('.') : ''
+      return path ? `${path}: ${issueMessage}` : issueMessage
+    }).filter(Boolean)
+    if (readable.length) return readable.join('; ')
+  }
+  if (typeof message === 'string' && message.trim()) return message
+  return fallback
+}
+
+/** Accept either the documented envelope ({enhanced}|{result}|{data:{enhanced}})
+ *  or a bare enhanced-spec object. Unknown shapes are rejected, not guessed. */
+function readEnhancedPayload(source: unknown): {
+  enhanced?: EnhancedSpec
+  qa?: QaReview
+  analysis?: EnhanceAnalysis
+  meta?: EnhanceMeta
+} {
+  const direct = enhancedSpecSchema.safeParse(source)
+  if (direct.success) return { enhanced: toEnhancedSpec(direct.data) }
+  const envelope = enhanceEnvelopeSchema.safeParse(source)
+  if (!envelope.success) return {}
+  const inner = envelope.data.enhanced ?? envelope.data.result
+  if (inner) {
+    return {
+      enhanced: toEnhancedSpec(inner),
+      qa: envelope.data.qa,
+      analysis: envelope.data.analysis,
+      meta: envelope.data.meta,
+    }
+  }
+  const nested = asEnhanceRecord(envelope.data.data)
+  const fromNested = nested ? readEnhancedPayload(nested) : {}
+  return {
+    enhanced: fromNested.enhanced,
+    qa: envelope.data.qa ?? fromNested.qa,
+    analysis: envelope.data.analysis ?? fromNested.analysis,
+    meta: envelope.data.meta ?? fromNested.meta,
+  }
+}
+
+export interface EnhanceTaskInput {
+  mode: EnhanceMode
+  title: string
+  spec: string
+  workspace: string
+  outputRepo?: string
+  writeTarget: WriteTarget
+  taskType: TaskType
+  delivery: Delivery
+  sources: SourceRepoInput[]
+  /** Previous adversarial QA findings, used by Regenerate with QA fixes. */
+  qaFindings?: string[]
+}
+
+/** Typed result: `ok` means HTTP success AND a usable enhanced spec. `status`
+ *  is the HTTP status (0 = no response). `error` is operator-readable. */
+export interface EnhanceResult {
+  ok: boolean
+  status: number
+  error?: string
+  enhanced?: EnhancedSpec
+  qa?: QaReview
+  analysis?: EnhanceAnalysis
+  meta?: EnhanceMeta
+}
+
+/** Ask the local enhancer to improve/analyze the spec. Never creates a task. */
+export async function enhanceTaskSpec(input: EnhanceTaskInput): Promise<EnhanceResult> {
+  // Mirror the server contract before spending a model turn on a 400.
+  const missing: string[] = []
+  if (!input.title.trim()) missing.push('a title')
+  if (!input.spec.trim()) missing.push('a spec')
+  if (!input.workspace.trim()) missing.push('a project workspace')
+  if (missing.length) {
+    return { ok: false, status: 0, error: `Add ${missing.join(', ')} before running the enhancer.` }
+  }
+  try {
+    const response = await fetch('/api/v1/enhance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(420000),
+      body: JSON.stringify({
+        mode: input.mode,
+        title: input.title.trim(),
+        spec: input.spec.trim(),
+        workspace: input.workspace.trim(),
+        outputRepo: input.outputRepo?.trim() || undefined,
+        writeTarget: input.writeTarget,
+        taskType: input.taskType,
+        delivery: input.delivery,
+        sources: input.sources
+          .filter((source) => source.id.trim() && source.path.trim())
+          .map((source) => ({ id: source.id.trim(), path: source.path.trim() })),
+        qaFindings: input.qaFindings?.length ? input.qaFindings : undefined,
+      }),
+    })
+    const text = await response.text().catch(() => '')
+    let payload: unknown = null
+    try { payload = text.trim() ? JSON.parse(text) : null } catch { payload = null }
+    if (!response.ok) {
+      const fallback = text.trim().slice(0, 300)
+      return { ok: false, status: response.status, error: enhanceErrorText(payload, fallback || `Enhancer request failed (${response.status}).`) }
+    }
+    const { enhanced, qa, analysis, meta } = readEnhancedPayload(payload)
+    if (!enhanced) {
+      return { ok: false, status: response.status, error: enhanceErrorText(payload, 'The enhancer returned no enhanced spec.') }
+    }
+    return { ok: true, status: response.status, enhanced, qa, analysis, meta }
+  } catch (error) {
+    const timedOut = error instanceof DOMException && error.name === 'TimeoutError'
+    return {
+      ok: false,
+      status: 0,
+      error: timedOut
+        ? 'The enhancer timed out after 420 seconds.'
+        : error instanceof Error
+          ? error.message
+          : 'The enhancer is unavailable.',
+    }
+  }
+}
 
 /** Update the department's local_repo: the project WORKSPACE (input repo) + optional
  *  extra input repos + optional OUTPUT repo (cross-repo delta target). Optional:

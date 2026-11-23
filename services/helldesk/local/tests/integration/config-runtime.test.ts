@@ -219,6 +219,58 @@ describe('runtime config /v1/config', () => {
     rt3.close();
   });
 
+  it('exposes the context tier ladder and resolves the effective budget', async () => {
+    const res = await fetch(`${base}/v1/config`, { headers: auth });
+    const body = await getJson(res);
+    // All tier knobs are live and the resolved effective budget is surfaced.
+    expect(body.meta.context.tier).toBe('live');
+    expect(body.meta.context.contextWindow).toBe('live');
+    expect(body.context_resolution).toBeTruthy();
+    expect(body.context_resolution.contextWindow).toBeGreaterThan(0);
+    expect(typeof body.context_resolution.userPromptCharBudget).toBe('number');
+    expect(body.context_resolution.kiloConfigTransportLimitChars).toBe(28_000);
+    // Default (auto) selection is recorded even when kilo.jsonc detection wins.
+    expect(body.config.context.tier).toBe('auto');
+  });
+
+  it('PATCH pins a context tier live, persists it, and null clears an override', async () => {
+    const patch = (context: Record<string, unknown>) =>
+      fetch(`${base}/v1/config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify({ context }),
+      });
+
+    // Pin 32K: explicit tier must beat any detected model window.
+    const pinned = await patch({ tier: '32k', contextWindow: 65536 });
+    expect(pinned.status).toBe(200);
+    const pinnedBody = await getJson(pinned);
+    expect(pinnedBody.applied_live).toContain('context.tier');
+    expect(pinnedBody.applied_live).toContain('context.contextWindow');
+
+    const after = await getJson(await fetch(`${base}/v1/config`, { headers: auth }));
+    expect(after.config.context.tier).toBe('32k');
+    expect(after.config.context.contextWindow).toBe(65536);
+    // Explicit window (65536) wins over the explicit tier: effective 64K.
+    expect(after.context_resolution.contextWindow).toBe(65536);
+    expect(after.context_resolution.tier).toBe('64k');
+    // Persisted for restart.
+    const persisted = JSON.parse(readFileSync(configPath, 'utf-8'));
+    expect(persisted.context.tier).toBe('32k');
+    expect(persisted.context.contextWindow).toBe(65536);
+
+    // null removes the optional override so the tier applies again.
+    const cleared = await patch({ contextWindow: null });
+    expect(cleared.status).toBe(200);
+    const clearedBody = await getJson(await fetch(`${base}/v1/config`, { headers: auth }));
+    expect(clearedBody.config.context.contextWindow).toBeUndefined();
+    expect(clearedBody.context_resolution.contextWindow).toBe(32768);
+    expect(clearedBody.context_resolution.tier).toBe('32k');
+
+    // Revert to auto for the rest of the suite.
+    await patch({ tier: 'auto' });
+  });
+
   it('a daemon can boot with an empty workspace list and still expose config', () => {
     expect(existsSync(configPath)).toBe(true);
   });

@@ -136,7 +136,9 @@ export function createLocalTools(getClient: () => NafClient | null) {
     gt_local_config: tool({
       description:
         'Read or change the Local HELLDESK runtime configuration (daemon concurrency, review policy/' +
-        'runner model, autonomy enable/mutation route, workspace inclusion). Public/effective view is redacted; ' +
+        'runner model, autonomy enable/mutation route, context tier 32K..1M, workspace inclusion). ' +
+        'Context tier `auto` detects the route model limit from kilo.jsonc; an explicit tier/window ' +
+        'overrides it for reviewers, workers and the mutation agent. Public/effective view is redacted; ' +
         'the host validates and persists changes to config.json. Fields that require a restart (bind/port/token/' +
         'state dirs) are persisted and reported as applies_on_restart. Use gt_local_config with no patch to GET, ' +
         'or pass {patch:{...}} to change.',
@@ -144,7 +146,7 @@ export function createLocalTools(getClient: () => NafClient | null) {
         patch: tool.schema
           .any()
           .optional()
-          .describe('Omit to read. Otherwise a partial {daemon?,policy?,autonomy?,workspaces?} update to apply live.'),
+          .describe('Omit to read. Otherwise a partial {daemon?,policy?,autonomy?,context?,workspaces?} update to apply live. context accepts {tier:"auto"|"32k"|…|"1m", contextWindow?, charsPerToken?, promptUtilization?, reservedOutputTokens?}; null clears an optional override.'),
       },
       async execute(args) {
         const client = requireClient();

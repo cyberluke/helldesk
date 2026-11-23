@@ -144,7 +144,7 @@ export function createFrontDeskTools(client: FrontDeskHelldeskClient) {
       description:
         'Sling multiple tickets as a tracked shift. Use this when a task should be broken ' +
         'into parallel sub-tasks that you want to track as a group. Creates N tickets + 1 shift, ' +
-        'assigns polecats, and dispatches all in one call. Use gt_list_shifts to check progress later.',
+        'assigns souls, and dispatches all in one call. Use gt_list_shifts to check progress later.',
       args: {
         workstation_id: tool.schema.string().describe('The UUID of the workstation to assign work to'),
         shift_title: tool.schema

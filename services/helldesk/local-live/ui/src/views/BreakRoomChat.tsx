@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Send, Wrench, Bot, User, Pause, RefreshCw, XOctagon, Activity } from '@/lib/icons'
 import { useParams } from 'react-router-dom'
 import { z } from 'zod'
-import { operatorRequest, readOperatorRoom, roomAgentId, short, listColonyMissions, type RoomAgent, type RoomState, type ColonyMission } from '../lib/engine'
+import { operatorRequest, readOperatorRoom, roomAgentId, short, isAgentWorking, listColonyMissions, type RoomAgent, type RoomState, type ColonyMission } from '../lib/engine'
+import { missionTaskName } from '../lib/mission-title'
+import { MissionChat } from '@/components/helldesk/MissionChat'
 
 const chatSchema = z.object({
   type: z.literal('chat'),
@@ -215,16 +217,74 @@ export default function BreakRoomChat() {
   const [feed, setFeed] = useState<FeedItem[]>([])
   const [draft, setDraft] = useState('')
   const [targetId, setTargetId] = useState('')
+  const [workstationFilter, setWorkstationFilter] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
   const [connection, setConnection] = useState<'connecting' | 'online' | 'reconnecting'>('connecting')
   const [activityLive, setActivityLive] = useState(false)
   const [notice, setNotice] = useState<Notice | null>(null)
   const [sending, setSending] = useState(false)
+  const [agentMission, setAgentMission] = useState<ColonyMission | undefined>(undefined)
   const wsRef = useRef<WebSocket | null>(null)
   const evtWsRef = useRef<WebSocket | null>(null)
   const logRef = useRef<HTMLDivElement | null>(null)
   const followRef = useRef(true)
   const selectedAgent = room.agents.find(agent => roomAgentId(agent) === targetId)
+  const workingCount = room.agents.filter(isAgentWorking).length
+  const workstationOptions = room.workstations
+    .map(workstation => ({
+      id: workstation.id || workstation.workstation_id || '',
+      name: workstation.name || workstation.id || workstation.workstation_id || '',
+    }))
+    .filter(workstation => workstation.id)
+  const filteredAgents = useMemo(
+    () => room.agents.filter(agent => !workstationFilter || agent.workstation_id === workstationFilter),
+    [room.agents, workstationFilter],
+  )
+  const agentMissionId = agentMission?.missionId
+  // The header speaks in human terms: a task name, not a mis_… handle.
+  const taskName = agentMission ? missionTaskName(agentMission.objective, agentMission.missionId) : ''
+  const missionState = agentMission?.state ?? ''
+  const missionRevisionState = agentMission?.revisionState ?? agentMission?.revision_state ?? ''
+  const missionReviewState = agentMission?.reviewJobState ?? agentMission?.review_job_state ?? ''
+  const missionActive = Boolean(agentMission) && !['VERIFIED_10_10', 'CANCELLED', 'CLOSED'].includes(missionState)
+  const missionInReview = ['ADJUDICATING', 'VERIFYING'].includes(missionReviewState) || ['EVIDENCE_CAPTURED'].includes(missionRevisionState)
+  const missionUpdated = agentMission?.updatedAt ?? agentMission?.updated_at ?? null
+
+  // ── REAL per-agent conversation ──────────────────────────────────────────
+  // The room feed is SHARED. Selecting an agent must show THAT agent's real
+  // session: the soul and the reviewers all act on the same mission, so we load
+  // the mission transcript (real Kilo parts + mirrored review verdicts) and
+  // filter by speaker for reviewers. No more "everyone shows the same text".
+  const selectedName = (selectedAgent?.name ?? '').toLowerCase()
+  const selectedRole = (selectedAgent?.role ?? '').toLowerCase()
+  const reviewerSpeaker =
+    selectedName.startsWith('reviewer-a') ? 'reviewer-a'
+      : selectedName.startsWith('reviewer-b') ? 'reviewer-b'
+        : selectedName.startsWith('adjudicator') ? 'adjudicator'
+          : undefined
+  const isSoulAgent = selectedRole === 'soul' || selectedName.startsWith('mutation@') || selectedName === 'soul' || roomAgentId(selectedAgent ?? {}) === 'role:soul'
+  const showAgentChat = !!selectedAgent && !!agentMissionId && (isSoulAgent || !!reviewerSpeaker)
+
+  // ── The live mission: ONE source for the header task name + the real chat ──
+  // The newest non-terminal control-plane mission is the work the crew is
+  // producing. Read-only projection; polled so a mission change never needs a
+  // page reload, and an unreachable control plane never blanks the header.
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        const missions = await listColonyMissions()
+        if (cancelled || !missions.length) return
+        const active = missions
+          .filter((m) => !['VERIFIED_10_10', 'CANCELLED', 'CLOSED'].includes(String(m.state ?? '').toUpperCase()))
+          .sort((a, b) => String(b.updatedAt ?? b.updated_at ?? '').localeCompare(String(a.updatedAt ?? a.updated_at ?? '')))
+        setAgentMission(active[0] ?? missions[0])
+      } catch { /* control plane unavailable — the room still works, the header omits the task */ }
+    }
+    void load()
+    const timer = setInterval(load, 15000)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -330,33 +390,64 @@ export default function BreakRoomChat() {
   }
 
   return <div className="operator-page operator-console">
-    <header className="operator-hero"><div><div className="operator-eyebrow">HELLDESK / LIVE OPERATIONS</div><h1 className="operator-title">The Operator-console<span className="operator-title-dot">.</span></h1><p>Drop in. Challenge the crew. Add a little glitter. Work carries on.</p></div><div className={'operator-connection ' + connection}><span />{connection === 'online' ? 'Room connected' : connection === 'connecting' ? 'Connecting' : 'Reconnecting'}</div></header>
+    <header className="operator-hero"><div><div className="operator-eyebrow">HELLDESK / LIVE OPERATIONS</div><h1 className="operator-title">The Operator-console<span className="operator-title-dot">.</span></h1><p>Drop in. Challenge the crew. Add a little glitter. Work carries on.</p>{taskName && <p className="operator-hero-task" title={agentMissionId ? `mission ${agentMissionId}` : undefined}><span className="operator-eyebrow">ACTIVE TASK</span><strong>{taskName}</strong>{agentMission?.state ? <span className="operator-mission-state">{agentMission.state}</span> : null}</p>}</div><div className={'operator-connection ' + connection}><span />{connection === 'online' ? 'Room connected' : connection === 'connecting' ? 'Connecting' : 'Reconnecting'}</div></header>
     <div className="operator-layout">
-      <aside className="operator-crew"><div className="operator-section-heading"><span>Your crew</span><span className="operator-chip">{room.agents.length}</span></div>
+      <aside className="operator-crew"><div className="operator-section-heading"><span>Your crew</span><span className="operator-chip">{filteredAgents.length}</span></div>
+        <select
+          className="operator-workstation-filter"
+          value={workstationFilter}
+          onChange={event => { setWorkstationFilter(event.target.value); setTargetId('') }}
+          aria-label="Filter crew by workstation"
+        >
+          <option value="">All workstations</option>
+          {workstationOptions.map(workstation => <option key={workstation.id} value={workstation.id}>{workstation.name}</option>)}
+        </select>
         <button className={'operator-person ' + (!targetId ? 'selected' : '')} onClick={() => setTargetId('')}><span className="operator-avatar"><User size={18} /></span><span><strong>Everyone</strong><small>The shared conversation</small></span></button>
-        {room.agents.map(agent => { const id = roomAgentId(agent); return <button key={id} className={'operator-person ' + (targetId === id ? 'selected' : '')} onClick={() => setTargetId(id)}><span className="operator-avatar"><Bot size={18} /></span><span><strong>{agent.name || short(id)}</strong><small>{agent.role || 'agent'} · {agent.status || 'unknown'}</small></span></button> })}
-        {!room.agents.length && !roomError && <p className="operator-empty-note">Your crew will appear here when agents register. Start a task in Task Studio.</p>}
+        {filteredAgents.map(agent => { const id = roomAgentId(agent); return <button key={id} className={'operator-person ' + (targetId === id ? 'selected' : '')} onClick={() => setTargetId(id)}><span className="operator-avatar"><Bot size={18} /></span><span><strong>{agent.name || short(id)}</strong><small>{agent.role || 'agent'} · {agent.status || 'unknown'}</small></span></button> })}
+        {!filteredAgents.length && !roomError && <p className="operator-empty-note">{workstationFilter ? 'No agents are registered on this workstation.' : 'Your crew will appear here when agents register. Start a task in Task Studio.'}</p>}
         {roomError && <p role="status" className="operator-notice negative">Crew status unavailable: {roomError}</p>}
         <div className="operator-contract"><span className="operator-eyebrow">YOUR SEAT AT THE TABLE</span><p>Agents build. ExcellenceGovernor reviews. You steer when you want—and decide what meets your standard.</p></div>
       </aside>
       <main className="operator-conversation">
-        <div className="operator-conversation-heading"><div><h2>{selectedAgent ? selectedAgent.name || short(targetId) : 'AI Party Room'}</h2><p>{selectedAgent ? 'Your message is queued directly to this agent. Room activity remains visible below.' : 'One unified feed: the shared conversation AND every colony move (dispatch, missions, reviews, invariants).'}</p></div><div className="operator-tabs" aria-label="Activity filter">{(['all', 'conversation', 'activity', 'tools'] as const).map(value => <button key={value} aria-pressed={filter === value} onClick={() => setFilter(value)}>{value}</button>)}</div></div>
+        <div className="operator-conversation-heading"><div><h2>{selectedAgent ? selectedAgent.name || short(targetId) : 'AI Party Room'}</h2><p>{showAgentChat ? `Real Kilo session${reviewerSpeaker ? ' · this reviewer' : ''} on ${taskName || 'the active mission'}. Messages here steer that mission.` : selectedAgent ? 'Select the soul or a reviewer to see its real session; the shared room stays in Everyone.' : 'One unified feed: the shared conversation AND every colony move (dispatch, missions, reviews, invariants).'}</p></div>{!showAgentChat && <div className="operator-tabs" aria-label="Activity filter">{(['all', 'conversation', 'activity', 'tools'] as const).map(value => <button key={value} aria-pressed={filter === value} onClick={() => setFilter(value)}>{value}</button>)}</div>}</div>
+        {showAgentChat && agentMission && missionActive && (
+          <div className="operator-agent-working" role="status">
+            <span className="operator-working-dot" />
+            <span>
+              {missionInReview
+                ? `ExcellenceGovernor is reviewing the completed build${missionReviewState ? ` · ${missionReviewState.toLowerCase()}` : ''}.`
+                : `${selectedAgent?.name || 'The agent'} is working${missionRevisionState ? ` · ${missionRevisionState.toLowerCase()}` : ''}.`}
+              {missionUpdated ? ` Last update ${new Date(missionUpdated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.` : ''}
+              {' '}The full turn appears here when it finishes; the workspace commits as it goes.
+            </span>
+          </div>
+        )}
         <div className="operator-party-status">
           <span className={'operator-dot ' + (connection === 'online' ? '' : 'warn')} /> chat {connection}
           <span className="operator-sep">·</span>
           <span className={'operator-dot ' + (activityLive ? '' : 'warn')} /> colony {activityLive ? 'live' : 'reconnecting'}
           <span className="operator-sep">·</span>
-          <span><strong>{room.agents.filter(a => a.status === 'working').length}</strong> working</span>
+          <span title="A crew member counts as working when its status is 'working' or its engine checkpoint is running"><strong>{workingCount}</strong> working</span>
           {room.agents.filter(a => (a as { current_hook_ticket_id?: string | null }).current_hook_ticket_id).slice(0, 2).map(a => (
             <span key={a.id || a.ticket_id || a.agent_id} className="operator-party-chip" title="hooked to a ticket">{a.name || short(a.id || a.ticket_id || a.agent_id)} → {(a as { current_hook_ticket_id?: string | null }).current_hook_ticket_id ? short((a as { current_hook_ticket_id: string }).current_hook_ticket_id) : ''}</span>
           ))}
         </div>
-        <div ref={logRef} className="operator-stream" role="log" aria-label="Crew activity" onScroll={event => { const node = event.currentTarget; followRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80 }}>
-          {!visibleFeed.length && <div className="operator-empty"><Bot size={32} /><h3>Room for your next big idea.</h3><p>Messages and agent activity arrive here live. The crew does not need you to keep this page open.</p></div>}
-          {visibleFeed.map(item => <FeedRow key={item.source === 'chat' ? 'chat:' + item.chat.event_id : 'act:' + activityKey(item.event)} item={item} />)}
-        </div>
-        <div className="operator-compose"><textarea aria-label={selectedAgent ? 'Message selected agent' : 'Message the room'} value={draft} maxLength={16000} onChange={event => setDraft(event.target.value)} placeholder={selectedAgent ? `A note for ${selectedAgent.name || 'this agent'}…` : 'What if we made it extraordinary…'} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send() } }} /><div className="operator-compose-footer"><span>Enter to send · Shift + Enter for a new line</span><button onClick={send} disabled={sending || !draft.trim() || (!targetId && connection !== 'online')}><Send size={16} />{sending ? 'Queueing…' : selectedAgent ? 'Queue to agent' : 'Share with room'}</button></div>{notice && <p role="status" className={'operator-notice ' + (notice.ok ? 'positive' : 'negative')}>{notice.text}</p>}</div>
-        <Steering key={departmentId} departmentId={departmentId} room={room} selectedAgent={selectedAgent} />
+        {showAgentChat ? (
+          <div className="operator-stream" role="log" aria-label="Agent live session">
+            <MissionChat missionId={agentMissionId!} speakerFilter={reviewerSpeaker} />
+          </div>
+        ) : (
+          <div ref={logRef} className="operator-stream" role="log" aria-label="Crew activity" onScroll={event => { const node = event.currentTarget; followRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80 }}>
+            {!visibleFeed.length && <div className="operator-empty"><Bot size={32} /><h3>Room for your next big idea.</h3><p>Messages and agent activity arrive here live. The crew does not need you to keep this page open.</p></div>}
+            {visibleFeed.map(item => <FeedRow key={item.source === 'chat' ? 'chat:' + item.chat.event_id : 'act:' + activityKey(item.event)} item={item} />)}
+          </div>
+        )}
+        {!showAgentChat && (
+          <div className="operator-compose"><textarea aria-label={selectedAgent ? 'Message selected agent' : 'Message the room'} value={draft} maxLength={16000} onChange={event => setDraft(event.target.value)} placeholder={selectedAgent ? `A note for ${selectedAgent.name || 'this agent'}…` : 'What if we made it extraordinary…'} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send() } }} /><div className="operator-compose-footer"><span>Enter to send · Shift + Enter for a new line</span><button onClick={send} disabled={sending || !draft.trim() || (!targetId && connection !== 'online')}><Send size={16} />{sending ? 'Queueing…' : selectedAgent ? 'Queue to agent' : 'Share with room'}</button></div>{notice && <p role="status" className={'operator-notice ' + (notice.ok ? 'positive' : 'negative')}>{notice.text}</p>}</div>
+        )}
+        {!showAgentChat && (
+          <Steering key={departmentId} departmentId={departmentId} room={room} selectedAgent={selectedAgent} />
+        )}
       </main>
     </div>
   </div>

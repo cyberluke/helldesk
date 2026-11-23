@@ -16,7 +16,14 @@ export function renderDrawerContent(
 ): ReactNode {
   switch (resource.type) {
     case 'ticket':
-      return <TicketPanel ticketId={resource.ticketId} workstationId={resource.workstationId} push={helpers.push} />;
+      return (
+    <TicketPanel
+      ticketId={resource.ticketId}
+      workstationId={resource.workstationId}
+      departmentId={resource.departmentId}
+      push={helpers.push}
+    />
+  );
     case 'agent':
       return (
         <AgentPanel

@@ -4,9 +4,14 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSy
 import { join, resolve, relative, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { createKilo } from '@kilocode/sdk';
+import { ensureHiddenChildSpawns } from './windows-spawn';
+import { mapKiloSessionMessages, type ChatTranscriptBase, type ChatTranscriptItem } from './chat-transcript';
 import { FluentGit } from './git-async';
 import { writableKiloConfiguration } from './config-discovery';
-import { deepMerge } from './config-resolve';
+import { loadConfig, type ContextConfig } from './config';
+import { resolveKiloBinary } from './kilo-binary';
+import { KILO_CONFIG_TRANSPORT_LIMIT_CHARS, resolveContextBudget } from './context-tiers';
+import { probeProvider } from './provider-preflight';
 import { z } from 'zod';
 
 /**
@@ -35,9 +40,26 @@ import { z } from 'zod';
 export type MutationOutcome =
   | 'CHANGED'
   | 'NO_CHANGE'
+  | 'SCRATCH_ONLY'    // delta is only probe/scratch/diagnostic files, NOT the deliverable
   | 'BLOCKED_EXTERNAL'
   | 'FAILED_TRANSIENT'
   | 'FAILED_PLAN';
+
+/** Classify a changed file as "diagnostic probe / scratch reporter" (NOT a real
+ *  deliverable). Used to break the vicious cycle where the mutation agent writes
+ *  throwaway `_probe.cmd`/`_run_test.cmd`/`*.log` helpers instead of the named
+ *  package source, the reviewer rejects it ("no framework deliverable exists"),
+ *  and the mission replans forever (the observed 4614-revision runaway).
+ *  Heuristic on basename — conservative: only unambiguous probe/scratch shapes. */
+export function isScratchOnlyFile(filePath: string): boolean {
+  const base = filePath.replace(/\\/g, '/').split('/').pop() ?? filePath
+  const name = base.toLowerCase()
+  if (name.startsWith('_') && name.endsWith('.cmd')) return true          // _probe.cmd, _run_test.cmd
+  if (name.startsWith('_') && name.endsWith('.ps1')) return true          // _probe.ps1
+  if (name.endsWith('.log') || name.endsWith('.out')) return true          // diagnostic dumps
+  if (/probe/.test(name) && /\.(cmd|ps1|sh|bat|ts|js|mjs)$/.test(name)) return true
+  return false
+}
 
 export interface MutationRunner {
   execute(request: RepairRequest, signal: AbortSignal): Promise<RepairResult>;
@@ -124,7 +146,7 @@ export async function fingerprintWorkspace(workspacePath: string): Promise<strin
  *
  * Truthful metadata: transport = `@kilocode/sdk` createKilo (headless Kilo), NOT
  * ChatGPT Codex. Provider/model are the configured model route (e.g.
- * litellm-edge/differential_sseproxy); `agent` is the configured writable agent.
+ * an OpenAI-compatible provider or the effective Kilo route); `agent` is the configured writable agent.
  */
 export class KiloMutationRunner implements MutationRunner {
   readonly transport = '@kilocode/sdk' + '.createKilo';
@@ -141,24 +163,55 @@ export class KiloMutationRunner implements MutationRunner {
     baseURL: string;
     apiKey?: string;
     system?: string;
+    /** Live operator context-tier config (resolved per mutation run). */
+    context?: ContextConfig;
+    /** Live chat capture sink (real Kilo session parts -> operator transcript). */
+    onChat?: (items: ChatTranscriptItem[], base: ChatTranscriptBase) => void;
   }) {
     this.provider = opts.providerID || 'inherit';
     this.model = opts.modelID || 'inherit';
     this.agent = 'kilo-mutator';
   }
 
+  /** How many operator plugins (satin memory + gates + continuity hooks) the last
+   *  buildSdkConfig wired into this mutation session. Exposed for observability —
+   *  the engine depends on a NON-ZERO value; a zero here is a hard invariant failure. */
+  mutationPluginCount = 0;
+
   /** Build the SDK Config for ONE writable mutation agent (write+shell+code tools
    *  ALLOWED — the opposite of the read-only reviewer). Provider routing is
    *  identical to kilo-headless so the same model route serves both. */
   private buildSdkConfig(directory: string): Record<string, unknown> {
     const inherited = writableKiloConfiguration();
+    // INVARIANT (operator critical): the autonomous mutation session MUST inherit
+    // the operator's full plugin set — satin memory (the lamp), gate plugins, and
+    // every continuity/recovery hook. The engine depends on these for cross-restart
+    // memory continuity and for the same quality discipline the interactive session
+    // is under. If writableKiloConfiguration returns no plugins, a silently-stripped
+    // hook is the EXACT failure that leaves an agent context-memory-lost and loops
+    // forever (observed 4614-revision runaway). Fail loudly, never mutate with a
+    // hobbled memory/gate runtime.
+    const pluginList = (inherited.plugin as unknown[] | undefined) ?? []
+    if (!pluginList.length) {
+      throw new Error('mutation-session-no-plugins: writableKiloConfiguration returned zero plugins — the autonomous mutation agent would run WITHOUT satin-memory/gate hooks. Refusing to mutate: restore the operator plugin config (~/.config/kilo/plugin) before re-dispatching.')
+    }
+    this.mutationPluginCount = pluginList.length
     const route = inherited.model || `${this.opts.providerID}/${this.opts.modelID}`;
     const slash = route.indexOf('/');
     if (slash < 1 || slash === route.length - 1) throw new Error('Kilo requires a configured provider/model route');
     const providerID = route.slice(0, slash);
     const modelID = route.slice(slash + 1);
     this.provider = providerID; this.model = modelID;
-    const modelRef = `${providerID}/${modelID}`;
+    // Wire-model fix (P0): the `model` handed to the OpenAI-compatible provider
+    // MUST be the bare modelID. The provider-prefixed `provider/model` route is a
+    // Kilo/host routing convention; OpenAI-compatible servers (e.g. a local proxy
+    // at localhost:4000/v1) reject the prefixed form with 400 "Invalid model
+    // name". /v1/models lists only the bare id, and the direct-path inference.ts
+    // already sends provider.modelID (verified working). Only `enabled_providers`
+    // keeps the route so Kilo still routes to the right provider.
+    const modelRef = this.opts.baseURL && (this.opts.providerID === providerID)
+      ? modelID
+      : `${providerID}/${modelID}`;
     const agents = z.record(z.string(), z.unknown()).safeParse(inherited.agent);
     const baseAgent = z.object({ prompt: z.string().optional(), permission: z.union([z.record(z.string(), z.unknown()), z.enum(['allow', 'ask', 'deny'])]).optional() }).passthrough().safeParse(agents.success ? agents.data[inherited.default_agent || 'natural'] : undefined);
     const permissions = (value: unknown): Record<string, unknown> => typeof value === 'string' ? { '*': value } : z.record(z.string(), z.unknown()).safeParse(value).data || {};
@@ -188,17 +241,100 @@ export class KiloMutationRunner implements MutationRunner {
     if (['allow', 'ask', 'deny'].includes(String(operatorPermissions['*'])))
       for (const key of Object.keys(writePermission)) writePermission[key] = operatorPermissions['*'];
     Object.assign(writePermission, operatorPermissions);
-    return deepMerge<Record<string, unknown>>(inherited, {
+    // ── CONFIG TRANSPORT BUDGET (P0) ──────────────────────────────────────────
+    // @kilocode/sdk transports config in the spawned server's KILO_CONFIG_CONTENT
+    // environment variable. Windows caps ONE variable at ~32,767 chars. The
+    // operator's full config is ~380 KB (its 17 agents alone are ~356 KB), so a
+    // full deep-merge is SILENTLY TRUNCATED: the headless server logs
+    // `ConfigInvalidError skipped config`, registers no provider, and EVERY
+    // session.prompt fails with `UnknownError` — the exact "0 successful runs"
+    // signature. Project ONLY the fields a writable mutation session needs and
+    // fail loudly if the projection still cannot fit.
+    const inheritedProvider = inherited.provider?.[providerID] as Record<string, unknown> | undefined;
+    // CONTEXT TIER: project the operator's tier (config.json override, else the
+    // model's kilo.jsonc limit.context) as the provider model window. The previous
+    // hardcoded 131072 truncated 256K-1M local models and overflowed 32K ones.
+    let contextConfig = this.opts.context;
+    if (!contextConfig) {
+      try { contextConfig = loadConfig().context; } catch { contextConfig = undefined; }
+    }
+    const contextBudget = resolveContextBudget({
+      context: contextConfig,
+      providerID,
+      modelID,
+    });
+    const inheritedModels = inheritedProvider?.models;
+    const inheritedModel = inheritedModels && typeof inheritedModels === 'object' && !Array.isArray(inheritedModels)
+      ? (() => {
+          const table = inheritedModels as Record<string, unknown>;
+          const direct = table[modelID];
+          if (direct !== undefined) return direct as Record<string, unknown>;
+          const byId = Object.keys(table).find((k) => {
+            const candidate = table[k];
+            return !!candidate && typeof candidate === 'object' && (candidate as { id?: unknown }).id === modelID;
+          });
+          return byId ? (table[byId] as Record<string, unknown>) : undefined;
+        })()
+      : undefined;
+    const modelDef: Record<string, unknown> = {
+      ...(inheritedModel ?? {}),
+      id: modelID,
+      name: (inheritedModel?.name as string | undefined) ?? modelID,
+      tool_call: inheritedModel?.tool_call ?? true,
+      reasoning: inheritedModel?.reasoning ?? true,
+      modalities: inheritedModel?.modalities ?? { input: ['text'], output: ['text'] },
+      // context+input+output always add up to the resolved window. Copying a
+      // stale inherited `limit.input` from a larger profile would contradict a
+      // pinned lower tier, so the tier resolver owns all three.
+      limit: {
+        context: contextBudget.contextWindow,
+        input: contextBudget.inputBudgetTokens,
+        output: contextBudget.outputBudgetTokens,
+      },
+    };
+    // Narrow the provider models to the ONE routed model: the operator provider
+    // may declare many tier profiles, and shipping them all wastes the limited
+    // KILO_CONFIG_CONTENT transport budget.
+    const providerDef: Record<string, unknown> | undefined = inheritedProvider
+      ? { ...inheritedProvider, models: { [modelID]: modelDef } }
+      : this.opts.baseURL
+        ? {
+            npm: '@ai-sdk/openai-compatible',
+            options: {
+              baseURL: this.opts.baseURL.replace(/\/+$/, ''),
+              ...(this.opts.apiKey ? { apiKey: this.opts.apiKey } : {}),
+            },
+            models: { [modelID]: modelDef },
+          }
+        : undefined;
+    if (!providerDef) {
+      throw new Error(`mutation-session-provider-missing: provider '${providerID}' is not defined in the effective Kilo config and no baseURL was supplied; refusing to spawn a session that cannot reach a model.`);
+    }
+    const projected: Record<string, unknown> = {
+      // ONLY the resolved provider — never the operator's whole registry.
+      provider: { [providerID]: providerDef },
       model: modelRef,
       enabled_providers: providerID ? [providerID] : [],
       default_agent: this.agent,
+      // Invariants preserved: the operator plugin set (satin memory + gates),
+      // MCP servers, permissions and instructions — the same discipline the
+      // interactive session runs under. The 16 unused agent prompts are NOT
+      // shipped: the mutation agent embeds the operator's base prompt below.
+      plugin: inherited.plugin,
+      mcp: inherited.mcp,
+      permission: writePermission,
+      instructions: inherited.instructions,
+      experimental: inherited.experimental,
       agent: {
         [this.agent]: {
           ...(baseAgent.success ? baseAgent.data : {}),
           model: modelRef,
+          // Kilo >=7.8.31 validates tool flags as booleans. The legacy
+          // `{ edit: { enabled: true } }` shape makes the WHOLE KILO_CONFIG_CONTENT
+          // invalid, so the server skips it and registers no agent/provider.
           tools: {
-            edit: { enabled: true },
-            bash: { enabled: true },
+            edit: true,
+            bash: true,
           },
           permission: writePermission,
           prompt: [
@@ -212,35 +348,33 @@ export class KiloMutationRunner implements MutationRunner {
             'Before reporting done, verify your change (compile/test if available).',
             'Do NOT self-verify against review gates — an independent read-only ExcellenceGovernor does that separately.',
           ].join('\n'),
-          cwd: directory,
+          // NOTE: do NOT put `cwd` here. The session directory already comes from
+          // session.create({ query: { directory } }); an agent-level `cwd` leaks
+          // into the provider request and Azure rejects it with
+          // `400 Unrecognized request argument supplied: cwd`.
         },
       },
-      provider: providerID === this.opts.providerID && this.opts.baseURL && !inherited.provider?.[providerID]
-        ? {
-            [providerID]: {
-              npm: '@ai-sdk/openai-compatible',
-              options: {
-                baseURL: this.opts.baseURL.replace(/\/+$/, ''),
-                ...(this.opts.apiKey ? { apiKey: this.opts.apiKey } : {}),
-              },
-              models: {
-                [modelID]: {
-                  id: modelID,
-                  name: modelID,
-                  tool_call: true,
-                  reasoning: true,
-                  limit: { context: 131072, output: 32000 },
-                  modalities: { input: ['text'], output: ['text'] },
-                },
-              },
-            },
-          }
-        : {},
-    });
+    };
+    const serialized = JSON.stringify(projected);
+    // Headroom below the 32,767 cap for the SDK's mergeConfig envelope. This is
+    // the Windows ENV TRANSPORT cap — unrelated to the model context tier.
+    if (serialized.length > KILO_CONFIG_TRANSPORT_LIMIT_CHARS) {
+      throw new Error(`mutation-session-config-too-large: projected Kilo config is ${serialized.length} chars (limit ${KILO_CONFIG_TRANSPORT_LIMIT_CHARS}; KILO_CONFIG_CONTENT is capped at 32767 on Windows and a truncated value makes the server skip ALL config, registering no provider). Reduce the operator default agent prompt or plugin count. The model context tier (${contextBudget.tier}, ${contextBudget.contextWindow} tokens) is NOT the cause.`);
+    }
+    return projected;
   }
 
   async execute(request: RepairRequest, signal: AbortSignal): Promise<RepairResult> {
     const before = await fingerprintWorkspace(request.workspacePath);
+    // Pre-mutation HEAD: the mutation agent may COMMIT its work (the prompt
+    // grants local git-commit). Evidence capture downstream iterates
+    // `changedFiles`, so reporting only the dirty working tree after a commit
+    // yields [] → zero evidence artifacts → every gate can never PASS → the
+    // mission replans forever. Diff against this base instead.
+    let baseHead = '';
+    try {
+      baseHead = (await FluentGit.in(request.workspacePath).run(['rev-parse', 'HEAD'])).trim();
+    } catch { /* empty repository / not git — full status scan still applies */ }
     const commands: string[] = [];
     const artifacts: string[] = [];
     const changed: string[] = [];
@@ -249,6 +383,13 @@ export class KiloMutationRunner implements MutationRunner {
     if (!request.workspacePath) {
       return { outcome: 'FAILED_PLAN', changedFiles: [], commandsExecuted: [], artifactsProduced: [], workspaceFingerprintBefore: before, workspaceFingerprintAfter: before, error: 'mutation workspace path is empty' };
     }
+    // Provider reachability preflight: one explicit, visible attempt instead of
+    // burning a revision per ECONNREFUSED. This is transient (the gateway may be
+    // restarting), so the controller retries within its bounded policy.
+    const providerProbe = await probeProvider(this.opts.baseURL);
+    if (!providerProbe.ok) {
+      return { outcome: 'FAILED_TRANSIENT', changedFiles: [], commandsExecuted: [], artifactsProduced: [], workspaceFingerprintBefore: before, workspaceFingerprintAfter: before, error: providerProbe.error ?? `provider_unreachable: ${this.opts.baseURL}` };
+    }
     // Match kilo-headless PATH prepend so a non-PATH `kilo` binary is found.
     // ROOT-CAUSE FIX: the SDK's createKiloServer spawns `kilo` from PATH ONLY.
     // If the kilo bin dir is not on PATH, createKilo throws `spawn kilo ENOENT`,
@@ -256,7 +397,12 @@ export class KiloMutationRunner implements MutationRunner {
     // cause of raw `no-change` across every mutation. Resolve to an ABSOLUTE path
     // (or derive from PATH) and ALWAYS prepend its dir before createKilo, then
     // fail loudly with a precise `kilo-binary` diagnosis instead of the opaque wrap.
-    const bin = this.opts.codexBin || 'kilo';
+    // Live config may be empty after an operator PATCH: resolve the newest
+    // installed Kilo CLI here too, so a config edit never strands a running
+    // mission on an old/no path.
+    const configuredBin = this.opts.codexBin;
+    const discovered = resolveKiloBinary({ configured: configuredBin });
+    const bin = discovered?.path || configuredBin || 'kilo';
     const resolvedBin = bin.includes('/') || bin.includes('\\')
       ? bin
       : (process.env.PATH?.split(';').map((d) => join(d, 'kilo.exe')).find((p) => existsSync(p)) ?? bin);
@@ -271,9 +417,16 @@ export class KiloMutationRunner implements MutationRunner {
     let runtime: { server?: { close(): void } } | null = null;
     try {
       const sdkConfig = this.buildSdkConfig(request.workspacePath);
+      // The Kilo VSIX exports its own KILO_CONFIG_CONTENT into every child shell.
+      // @kilocode/sdk MERGES process.env.KILO_CONFIG_CONTENT into the spawned
+      // server config; a >32K value is truncated by Windows into invalid JSON and
+      // the server then skips ALL config (no provider). The projected config above
+      // is self-contained, so drop the inherited blob before spawning.
+      delete process.env.KILO_CONFIG_CONTENT;
       let created: { client: unknown; server?: { close(): void } };
       try {
-        created = await createKilo({ port: 0, config: sdkConfig as never }) as { client: unknown; server?: { close(): void } };
+        ensureHiddenChildSpawns();
+        created = await createKilo({ port: 0, config: sdkConfig as never, timeout: 30_000 }) as { client: unknown; server?: { close(): void } };
       } catch (bootErr) {
         const bm = bootErr instanceof Error ? bootErr.message : String(bootErr);
         if (/ENOENT/i.test(bm)) {
@@ -292,6 +445,9 @@ export class KiloMutationRunner implements MutationRunner {
       };
       commands.push('kilo.createKilo');
       const client = created.client as unknown as {
+        mcp: {
+          status(options: { query: { directory: string } }): Promise<{ data?: Record<string, { status?: string }> }>;
+        };
         session: {
           create(options: { query: { directory: string } }): Promise<{ data?: { id?: string } }>;
           prompt(options: {
@@ -305,12 +461,58 @@ export class KiloMutationRunner implements MutationRunner {
             };
           }): Promise<Record<string, unknown>>;
           abort(options: { path: { id: string } }): Promise<unknown>;
+          messages(options: { path: { id: string }; query: { directory: string } }): Promise<unknown>;
         };
       };
+      // Match the VSIX Agent Manager startup contract: touching MCP status for
+      // this exact directory eagerly initializes the configured MCP set before
+      // the first prompt, so headless sessions do not race first-turn tool
+      // discovery. This is BEST-EFFORT: MCP servers are external processes
+      // (browser, blender, search, lattice) and a warmup transport error must
+      // never abort a mutation that only needs the built-in edit/bash/read
+      // tools — observed live as 67 revisions of `kilo-mcp-warmup-failed`
+      // thrash. Record the failure and continue; if a needed MCP tool is truly
+      // unavailable, the agent (and the reviewers) surface it explicitly.
+      try {
+        const mcp = await client.mcp.status({ query: { directory: request.workspacePath } });
+        const states = Object.entries(mcp.data ?? {}).map(([name, value]) => `${name}:${value?.status ?? 'unknown'}`);
+        commands.push(`kilo.mcp.status[${states.join(',')}]`);
+      } catch (mcpErr) {
+        const mm = mcpErr instanceof Error ? mcpErr.message : String(mcpErr);
+        commands.push(`kilo.mcp.status[warmup-failed:${mm.slice(0, 160)}]`);
+      }
+
       const createdSession = await client.session.create({ query: { directory: request.workspacePath } });
       const sessionID = createdSession.data?.id;
       if (!sessionID) throw new Error('headless Kilo failed to create a mutation session');
       commands.push('kilo.session.create');
+
+      // LIVE CHAT CAPTURE: the operator console must show the REAL Kilo session,
+      // not a synthetic feed. Poll this session's message parts while the agent
+      // works and stream new rows to the transcript store (idempotent by part
+      // id). Best-effort: a capture failure never affects the mutation.
+      const chatBase: ChatTranscriptBase = {
+        missionId: request.missionId,
+        ticketId: request.ticketId,
+        revisionId: request.revisionId,
+        sessionId: sessionID,
+      };
+      const seenChatParts = new Set<string>();
+      const captureChat = async () => {
+        if (!this.opts.onChat) return;
+        try {
+          const res = await client.session.messages({ path: { id: sessionID }, query: { directory: request.workspacePath } });
+          const list = (res as unknown as { data?: unknown }).data ?? res;
+          // Only NEW parts: the SDK returns the whole session each poll, and
+          // re-mapping/re-inserting hundreds of parts per tick blocked the event loop.
+          const items = mapKiloSessionMessages(list).filter((i) => !seenChatParts.has(i.partId));
+          if (!items.length) return;
+          for (const i of items) seenChatParts.add(i.partId);
+          this.opts.onChat(items, chatBase);
+        } catch { /* best effort */ }
+      };
+      await captureChat();
+      const chatTimer = setInterval(() => { void captureChat(); }, 2500);
 
       const prompt = [
         `MUTATION TASK (writable boundary; reviewers are separate and read-only).`,
@@ -324,6 +526,7 @@ export class KiloMutationRunner implements MutationRunner {
         request.acceptanceGates?.length ? `ACCEPTANCE GATES (MUST satisfy all before returning):\n- ${request.acceptanceGates.join('\n- ')}\nFor each gate, implement the contract explicitly, cover edge cases (coercive zeros, "0", false, null, NaN, Infinity where applicable), execute tests, and capture test output as evidence.` : '',
         `Allowed capabilities: ${request.allowedCapabilities.join(', ')}`,
         `Work in ${request.workspacePath}. Complete the full objective AND every acceptance gate without scope cuts. Reuse existing components and build the missing deltas. Record every command you run and every artifact you produce.`,
+        `HARD RULE: the delta MUST be the real deliverable (the framework/scene/entity/persistence/renderer/Tauri source under the objective's target directories), committed as your working-tree/files in ${request.workspacePath}. Diagnostic probe/scratch helpers (e.g. _probe.cmd, _run_test.cmd, _probe2.cmd, *.log dumps, throwaway scripts) are NOT a valid delta and will be rejected as "no framework deliverable". Inspect the layout if you must, but the files you WRITE must be the actual package/module source the objective names — not scripts that inspect them. If only probe/scratch files were created, you have not completed the task: keep writing the real modules.`,
       ].filter(Boolean).join('\n\n');
 
       // Abort handling: tie the session to the caller's AbortSignal so a cancel
@@ -399,12 +602,37 @@ export class KiloMutationRunner implements MutationRunner {
           }
 
           after = await fingerprintWorkspace(request.workspacePath);
-          changedNow = changedFilesSince(request.workspacePath);
+          // Include COMMITTED changes since the pre-run HEAD, not only the dirty
+          // working tree: a mutator that commits would otherwise report zero
+          // changed files, and the controller captures evidence only from this
+          // list (zero evidence ⇒ gates can never PASS ⇒ endless replan).
+          changedNow = changedFilesSinceFull(request.workspacePath, baseHead);
+          if (changedNow.length === 0) changedNow = changedFilesSince(request.workspacePath);
           if (after !== before) break; // real delta landed
         }
         void metadata;
         if (after !== before) {
           changed.push(...changedNow);
+          // SCRATCH-ONLY GUARD (war fix): if the produced delta is only diagnostic
+          // probe/run/scratch helpers (e.g. `_probe.cmd`, `_run_test.cmd`, `*.log`
+          // dumps, throwaway `_*.cmd`), it is NOT a real deliverable. The A/B
+          // reviewer would reject it as "no framework deliverable exists," which
+          // is the observed 4614-revision vicious cycle. So classify it explicitly
+          // instead of routing a doomed review: the controller surfaces this as a
+          // probe-only stall and the write-chase keeps pressing for real modules.
+          const scratchOnly = changedNow.length > 0 && changedNow.every(isScratchOnlyFile);
+          if (scratchOnly) {
+            const replyLog = responses.length ? `agent responses: ${responses.join(' | ')}` : 'no assistant response captured';
+            return {
+              outcome: 'SCRATCH_ONLY',
+              changedFiles: changed,
+              commandsExecuted: commands,
+              artifactsProduced: artifacts,
+              workspaceFingerprintBefore: before,
+              workspaceFingerprintAfter: after,
+              error: `scratch-only-delta (${changedNow.join(', ')}): the mutation produced only diagnostic probe/run helpers, not the real deliverable — ${replyLog}`,
+            };
+          }
           return {
             outcome: 'CHANGED',
             changedFiles: changed,
@@ -430,6 +658,8 @@ export class KiloMutationRunner implements MutationRunner {
           error: `no-change (${MAX_WRITE_PASSES} write passes, no workspace delta) — ${replyLog}`,
         };
       } finally {
+        clearInterval(chatTimer);
+        await captureChat();
         signal.removeEventListener('abort', abort);
       }
     } catch (err) {
@@ -723,7 +953,7 @@ export class ChildProcessCodexMutationRunner implements MutationRunner {
  *  Renames (X='R') appear as `XY old -> new`; we return the NEW path.
  */
 export function changedFilesSince(workspacePath: string): string[] {
-  const r = spawnSync('git', ['status', '--porcelain', '-z'], { cwd: workspacePath, encoding: 'utf8', timeout: 10_000 });
+  const r = spawnSync('git', ['status', '--porcelain', '-z', '-uall'], { cwd: workspacePath, encoding: 'utf8', timeout: 10_000 });
   if (r.status !== 0 || !r.stdout) return [];
   const out: string[] = [];
   // -z separates records with NUL; each record is `XY<space>path1\0` or
@@ -742,7 +972,9 @@ export function changedFilesSince(workspacePath: string): string[] {
       if (newPath) out.push(unquotePorcelain(newPath));
     } else {
       const tab = rec.indexOf('\t');
-      const path = tab >= 0 ? rec.slice(tab + 1) : rec.slice(2);
+      // Porcelain v1 records are `XY<space>path`; dropping only 2 chars keeps the
+      // separator space and corrupts the evidence path (" src/x.ts").
+      const path = tab >= 0 ? rec.slice(tab + 1) : rec.slice(3);
       if (path && path.length > 0) out.push(unquotePorcelain(path));
     }
     void statusPrefix;
@@ -779,7 +1011,7 @@ export function changedFilesSinceFull(workspacePath: string, baseHead: string): 
   }
   // Working-tree (uncommitted) changes + untracked. Porcelain -z is `XY<space>path\0`;
   // slice(2) leaves a leading space that breaks evidence capture — strip it.
-  for (const p of git(['status', '--porcelain', '-z'])) {
+  for (const p of git(['status', '--porcelain', '-z', '-uall'])) {
     const raw = p.startsWith('\t') ? p.slice(1) : p;
     const tab = raw.indexOf('\t');
     const path = tab >= 0 ? raw.slice(tab + 1) : raw.slice(2).replace(/^ /, '');
@@ -1110,15 +1342,28 @@ export function resolveMutationRunner(config: {
   baseURL: string;
   apiKey?: string;
   timeoutMs?: number;
+  /** Live operator context-tier config (wired from the runtime config store). */
+  context?: ContextConfig;
+  /** Live chat capture sink (Kilo session parts -> operator transcript). */
+  onChat?: (items: ChatTranscriptItem[], base: ChatTranscriptBase) => void;
 }): MutationRunner {
   const r = config.mutationRunner.trim().toLowerCase();
   if (r === 'kilo' || r === 'kilo-headless') {
+    if (!config.providerID || !config.modelID) {
+      throw new Error(
+        'mutation-model-missing: no default model is configured. Set `model` in the effective ' +
+          'Kilo config (~/.config/kilo/kilo.jsonc) or set autonomy.providerID/modelID explicitly. ' +
+          'No local provider fallback is assumed.',
+      );
+    }
     return new KiloMutationRunner({
       codexBin: config.codexBin,
       providerID: config.providerID,
       modelID: config.modelID,
       baseURL: config.baseURL,
       apiKey: config.apiKey,
+      context: config.context,
+      onChat: config.onChat,
     });
   }
   if (r === 'openai' || r === 'openai-tools') {

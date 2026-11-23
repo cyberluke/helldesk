@@ -1,4 +1,4 @@
-# CyberLuke Local HELLDESK — one-command reproducible verification
+# HELLDESK Local — one-command reproducible verification
 # Runs: typecheck -> unit tests -> integration (git/folder fixtures) -> fault
 # injection -> e2e smoke against a real local fixture -> report + API check.
 $ErrorActionPreference = "Stop"

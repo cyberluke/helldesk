@@ -1,4 +1,4 @@
-// NAF bridge for the CyberLuke Local HELLDESK adapter.
+// NAF bridge for the HELLDESK Local adapter.
 //
 // THIN, non-owning event publisher over the canonical NAI-Lattice NAF client
 // (`@cyberluke/nai-lattice-client`). The bridge does NOT:
@@ -128,8 +128,8 @@ export class NafBridge {
         'helldesk.host.disconnect',
         'helldesk.session.sync',
       ],
-      packageIdentity: '@cyberluke/nai-lattice-client@0.1.0',
-      buildSha: 'naf-client-ts-0.1.0',
+      packageIdentity: '@cyberluke/nai-lattice-client@0.2.0',
+      buildSha: 'naf-client-ts-0.2.0',
       pipePath: pipe,
       producerId: this.identity.producerId,
       onDisconnect: (e) => { this.connected = false; this.handlers.onDisconnected?.(e); },

@@ -135,7 +135,7 @@ export interface LocalDispatchHooks {
     ticket: Ticket,
 ) => Promise<{
     adapter: DispatchAdapter;
-cfg: { workdir: string; repoPath: string; outputRepo?: { repoPath: string; branch?: string; bareRemote?: string; initIfMissing?: boolean }; sourceRepos?: Array<{ id: string; path: string; label?: string; branch?: string }>; branch: string; bareRemote?: string; allowCommit: boolean };
+cfg: { workdir: string; repoPath: string; outputRepo?: { repoPath: string; branch?: string; bareRemote?: string; initIfMissing?: boolean }; sourceRepos?: Array<{ id: string; path: string; label?: string; branch?: string }>; branch: string; bareRemote?: string; allowCommit: boolean; engineMatrix?: Record<string, unknown> };
     } | null>;
   /** Fan-out a ticket event to the runtime event bus (map). */
   broadcastTicket: (departmentId: string, ticketId: string | undefined, payload: Record<string, unknown>) => void;
@@ -208,9 +208,15 @@ export function createLocalApplyContext(
           const task = ticketOps.getTicket(sql, dep.depends_on_ticket_id);
           return { task: dep.depends_on_ticket_id, title: task?.title, reviewedWorkspace: task ? missionBinding(task)?.workspace : undefined };
         });
-        const binding = await (hooks.submitMission || submitMission)(sql, ticket, cfg.outputRepo ? resolve(cfg.outputRepo.repoPath) : join(cfg.workdir, 'repo'),
-          `Primary read source checkout: ${join(cfg.workdir, 'repo')}. Original read-only source path: ${resolve(cfg.repoPath)} (contains current uncommitted files that git clones do not include; inspect these when required, never modify them). Extra original read-only sources: ${JSON.stringify(cfg.sourceRepos || [])}. Extra read-only source checkouts: ${join(cfg.workdir, 'sources')}. ${cfg.outputRepo ? `Implement directly in the writable output repository: ${resolve(cfg.outputRepo.repoPath)}. Never copy the whole input tree into it; federate the required capability only.` : `Single-repository mode: implement in the isolated checkout ${join(cfg.workdir, 'repo')}; original input is read-only. The resulting local commit stays in this checkout unless a remote is explicitly configured.`} Completed dependencies: ${JSON.stringify(upstream)}. Reuse their artifacts and Blueprints; do not recreate them. Do not modify original input repositories. Preserve source/output separation.`,
-          (cfg as { engine_matrix?: Record<string, unknown> }).engine_matrix);
+        // Single-repo mode uses the project workspace directly (input = output):
+        // the adapter auto-initialises it and the mission/agent work in place.
+        const missionWorkspace = cfg.outputRepo ? resolve(cfg.outputRepo.repoPath) : resolve(cfg.repoPath);
+        const routingNote = cfg.outputRepo
+          ? `Primary read source checkout: ${join(cfg.workdir, 'repo')}. Original read-only source path: ${resolve(cfg.repoPath)} (contains current uncommitted files that git clones do not include; inspect these when required, never modify them). Extra original read-only sources: ${JSON.stringify(cfg.sourceRepos || [])}. Extra read-only source checkouts: ${join(cfg.workdir, 'sources')}. Implement directly in the writable output repository: ${resolve(cfg.outputRepo.repoPath)}. Never copy the whole input tree into it; federate the required capability only.`
+          : `Project workspace (input + output): ${resolve(cfg.repoPath)}. It is auto-initialised as a git repository when needed. Implement directly in this workspace; the completed commit lands in this same repository. Extra read-only sources: ${JSON.stringify(cfg.sourceRepos || [])} (mounted at ${join(cfg.workdir, 'sources')}).`;
+        const binding = await (hooks.submitMission || submitMission)(sql, ticket, missionWorkspace,
+          `${routingNote} Completed dependencies: ${JSON.stringify(upstream)}. Reuse their artifacts and Blueprints; do not recreate them.${cfg.outputRepo ? ' Do not modify original input repositories. Preserve source/output separation.' : ''}`,
+          cfg.engineMatrix);
         ticketOps.logTicketEvent(sql, { ticketId, agentId, eventType: 'agent_spawned', newValue: 'mission_accepted', metadata: { missionId: binding.missionId, transport: 'local-mission-controller', productionAcceptance: 'CTO_ONLY' } });
         return true;
       } catch (err) {
@@ -495,13 +501,16 @@ export async function resolveLocalDispatch(
   ticket: Ticket,
 ): Promise<{
   adapter: DispatchAdapter;
-cfg: { workdir: string; repoPath: string; outputRepo?: { repoPath: string; branch?: string; bareRemote?: string; initIfMissing?: boolean }; sourceRepos?: Array<{ id: string; path: string; label?: string; branch?: string }>; branch: string; bareRemote?: string; allowCommit: boolean };
+cfg: { workdir: string; repoPath: string; outputRepo?: { repoPath: string; branch?: string; bareRemote?: string; initIfMissing?: boolean }; sourceRepos?: Array<{ id: string; path: string; label?: string; branch?: string }>; branch: string; bareRemote?: string; allowCommit: boolean; engineMatrix?: Record<string, unknown> };
     } | null> {
   // Department settings are defaults for future tasks, never mutable landing targets.
+  // Engine defaults are execution policy (not repository routing), so they remain
+  // live defaults and are merged with the ticket's pinned per-task override.
+  const departmentConfig = await department.getDepartmentConfig();
   let snapshot = ticket.metadata?.local_repo_snapshot;
   if (!Object.hasOwn(ticket.metadata || {}, 'local_repo_snapshot')) {
     if (missionBinding(ticket)) throw Error('Legacy active task has no pinned repository routing; refusing to infer a landing target from changed department settings');
-    const inherited = (await department.getDepartmentConfig()).local_repo;
+    const inherited = departmentConfig.local_repo;
     const workstation = workstationId ? workstationOps.getWorkstation(department.sql, workstationId) : null;
     snapshot = inherited ? LocalRepoSchema.parse({ ...inherited, branch: inherited.branch || workstation?.default_branch || 'main' }) : null;
     ticketOps.updateTicketFields(department.sql, ticket.ticket_id, { metadata: { ...ticket.metadata, local_repo_snapshot: snapshot, local_repo_snapshot_version: 1 } }, 'dispatch-routing');
@@ -516,7 +525,7 @@ cfg: { workdir: string; repoPath: string; outputRepo?: { repoPath: string; branc
     workstation?.default_branch ??
     'main';
 
-  const workdir = join(lr.workdir ?? join(process.env.LOCALAPPDATA ?? process.cwd(), 'CyberLuke', 'LocalGasDepartment', 'work', department.departmentId), ticket.ticket_id);
+  const workdir = join(lr.workdir ?? join(process.env.LOCALAPPDATA ?? process.cwd(), 'HELLDESK', 'LocalDepartment', 'work', department.departmentId), ticket.ticket_id);
 
 return {
     adapter: localGitAdapter,
@@ -530,6 +539,7 @@ return {
       bareRemote: lr.bare_remote,
       branch,
       allowCommit: lr.allow_commit !== false,
+      engineMatrix: departmentConfig.engine_matrix,
     },
   };
 }
@@ -566,7 +576,10 @@ export async function runReconcileTick(
   // Project the existing durable mission controller before scheduling. No
   // implementation/review awaits an operator response, and a closed dependency
   // means reviewed and landed work, never an empty preparatory git commit.
-  for (const ticket of ticketOps.listTickets(department.sql, { status: 'in_progress' })) {
+  const missionTickets = ticketOps
+    .listTickets(department.sql, {})
+    .filter((ticket) => ticket.status === 'in_progress' || ticket.status === 'in_review');
+  for (const ticket of missionTickets) {
     const binding = missionBinding(ticket);
     if (!binding?.missionId) continue;
     try {
@@ -578,15 +591,39 @@ export async function runReconcileTick(
         agentOps.touchAgent(department.sql, agent);
       }
       if (mission.state === 'VERIFIED_10_10') {
-        const resolved = await resolveLocalDispatch(department, ticket.workstation_id || '', ticket);
-        if (!resolved) throw Error('Reviewed mission cannot land: repository configuration missing');
-        const landed = resolved.cfg.allowCommit
-          ? await resolved.adapter.commit(resolved.cfg, `Reviewed task ${ticket.ticket_id}: ${ticket.title}`)
-          : { ok: true };
-        if (!landed.ok) throw Error('Reviewed mission could not land its output');
-        ticketOps.closeTicket(department.sql, ticket.ticket_id, agent || 'mission-controller');
+        const accepted = mission.human_acceptance === 'accepted';
+        // Land the reviewed output once (the in_progress → in_review transition is
+        // the landing marker); the human acceptance gate owns CLOSE.
+        if (ticket.status !== 'in_review') {
+          const resolved = await resolveLocalDispatch(department, ticket.workstation_id || '', ticket);
+          if (!resolved) throw Error('Reviewed mission cannot land: repository configuration missing');
+          const landed = resolved.cfg.allowCommit
+            ? await resolved.adapter.commit(resolved.cfg, `Reviewed task ${ticket.ticket_id}: ${ticket.title}`)
+            : { ok: true };
+          if (!landed.ok) throw Error('Reviewed mission could not land its output');
+        }
         if (agent) { agentOps.updateAgentStatus(department.sql, agent, 'idle'); agentOps.unhookTicket(department.sql, agent); }
-        department.broadcastTicketEvent({ type: 'ticket.status', ticketId: ticket.ticket_id, to: 'closed', machineReview: 'VERIFIED_10_10', productionAcceptance: 'CTO_ONLY' });
+        if (accepted) {
+          ticketOps.closeTicket(department.sql, ticket.ticket_id, agent || 'mission-controller');
+          department.broadcastTicketEvent({
+            type: 'ticket.status',
+            ticketId: ticket.ticket_id,
+            to: 'closed',
+            machineReview: 'VERIFIED_10_10',
+            productionAcceptance: 'ACCEPTED',
+          });
+        } else if (ticket.status !== 'in_review') {
+          // Machine verification is not acceptance. Keep the local ticket open
+          // in review until the operator accepts in the mission report.
+          ticketOps.updateTicketStatus(department.sql, ticket.ticket_id, 'in_review', agent || 'mission-controller');
+          department.broadcastTicketEvent({
+            type: 'ticket.status',
+            ticketId: ticket.ticket_id,
+            to: 'in_review',
+            machineReview: 'VERIFIED_10_10',
+            productionAcceptance: 'AWAITING_HUMAN',
+          });
+        }
       } else if (mission.state === 'CANCELLED') {
         ticketOps.updateTicketStatus(department.sql, ticket.ticket_id, 'failed', agent || 'mission-controller');
         if (agent) { agentOps.updateAgentStatus(department.sql, agent, 'idle'); agentOps.unhookTicket(department.sql, agent); }

@@ -113,8 +113,8 @@ the four primitives the SOTA baseline has that the local tier lacks:**
    proceeds. HELLDESK applies changes directly into the workspace and auto-runs
    the review — no approve-this-diff surface.
 2. **Per-card autonomy tier** (`suggest` / `edit` / `verify` / `autopush`).
-   rvmp's YOLO-vs-approvals and rayedbajwa's human gates are the pattern; Gas
-   Department has one global `autonomy.enabled`, not a per-card tier.
+   rvmp's YOLO-vs-approvals and rayedbajwa's human gates are the pattern; the
+   current HELLDESK engine has one global `autonomy.enabled`, not a per-card tier.
 3. **WIP-limit / priority-weighting.** rvmp's queue→…→done *routes attention*
    with a worker limit; HELLDESK's scheduler takes the first runnable ticket, no
    WIP cap per human reviewer, no priority weight.

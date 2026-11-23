@@ -1,4 +1,4 @@
-# CyberLuke Local HELLDESK — bootstrap
+# HELLDESK Local — bootstrap
 # Idempotent, user-scoped setup for native Windows. No admin rights, no Docker/WSL.
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -38,7 +38,7 @@ if ($LASTEXITCODE -ne 0) { throw "bun install failed" }
 Pop-Location
 
 # Persistent state dir
-$stateDir = Join-Path $env:LOCALAPPDATA "CyberLuke\LocalGasDepartment"
+$stateDir = Join-Path $env:LOCALAPPDATA "HELLDESK\LocalDepartment"
 New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
 Write-Host "[bootstrap] State dir: $stateDir" -ForegroundColor Green
 

@@ -76,7 +76,7 @@ Start-Owned 'local-live' $bun @('run','src/entry.ts') $live
 $hostExecutable=Join-Path $LatticeRoot 'target\release\nai-fabric-host.exe'
 $existingHost=Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object LocalPort -eq 8787
 if(!$existingHost -and (Test-Path -LiteralPath $hostExecutable)){Start-Owned 'nai-host' $hostExecutable @() $LatticeRoot}
-elseif(!$existingHost){Write-Warning "NAI fabric host missing: $hostExecutable. Operator chat federation/Inquisitor fabric view will show unavailable; local mission runner is separate."}
+elseif(!$existingHost){Write-Warning "NAI fabric host missing: $hostExecutable. Operator chat federation/NAI fabric view will show unavailable; local mission runner is separate."}
 $ready=$false
 for($attempt=0;$attempt -lt 30;$attempt++){
   try{$r=Invoke-RestMethod -Uri 'http://127.0.0.1:8790/api/kilo/config' -TimeoutSec 2;if($r.data){$ready=$true;break}}catch{}
@@ -85,5 +85,5 @@ for($attempt=0;$attempt -lt 30;$attempt++){
 if(!$ready){throw "Operator server did not become reachable. Inspect $state\local-live.stderr.log; owned services remain available for diagnosis."}
 Write-Output "Operator Room: http://127.0.0.1:8790/helldesk/"
 Write-Output "Kilo implements using its current configuration. Codex reviewer model: $ReviewerModel. Autonomy is enabled for queued and newly created missions."
-Write-Output "Create a town/rig, configure repositories in Task Studio, then launch your task. Logs: $state"
+Write-Output "Create a mission and workstation, configure repositories in Task Studio, then launch your task. Logs: $state"
 if(!$NoBrowser){Start-Process 'http://127.0.0.1:8790/helldesk/'}

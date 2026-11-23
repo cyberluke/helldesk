@@ -1,4 +1,4 @@
--- CyberLuke Local HELLDESK schema (v2) — multi-host control plane.
+-- HELLDESK Local schema (v2) — multi-host control plane.
 -- ADDITIVE migration: preserves all v1 data/jobs/reports. Adds host +
 -- session registries, the detached-review-worker table, and task-epoch
 -- columns for completion detection. user_version moves 1 -> 2.

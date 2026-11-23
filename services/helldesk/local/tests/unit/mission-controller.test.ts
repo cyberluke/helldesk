@@ -191,7 +191,9 @@ describe('mission-controller (Ender P0-D / P0-F / P0-G)', () => {
       ws.cleanup();
       const b1now = getTicket(h.d, b1.ticket_id);
       expect(b1now?.verification_state).toBe('VERIFIED_10_10');
-      expect(b1now?.execution_state).toBe('CLOSED');
+      // Machine verification waits for the human acceptance gate; it does not
+      // silently close the ticket.
+      expect(b1now?.execution_state).toBe('AWAITING_ACCEPTANCE');
       // B2 is now the runnable next ticket (its only dependency, B1, is verified),
       // but it is NOT yet verified itself.
       const b2now = getTicket(h.d, b2.ticket_id);

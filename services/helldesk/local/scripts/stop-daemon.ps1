@@ -1,4 +1,4 @@
-# CyberLuke Local HELLDESK -- stop the persistent daemon (Unix-style: pidfile).
+# HELLDESK Local -- stop the persistent daemon (Unix-style: pidfile).
 # Reads the exact owning daemon PID from the control plane pidfile and signals
 # ONLY that process (graceful). Never scans process names, never touches other
 # Kilo/VS Code/etc. processes.

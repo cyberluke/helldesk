@@ -1,10 +1,19 @@
 import { LocalProviderConfig } from './config';
+import {
+  DEFAULT_REVIEW_PROMPT_CHAR_BUDGET,
+  REVIEW_PROMPT_OVERHEAD_CHARS,
+} from './context-tiers';
 import type { EvidenceCtx } from './context-reader';
-import { spawn } from 'node:child_process';
-import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, readdirSync, statSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { resolveCodexBin } from './mutation-runner';
+import {
+  REVIEW_VERDICT_JSON_SCHEMA,
+  isUnsupportedStructuredOutput,
+  structuredResponseFormatChain,
+} from './review-contract';
 import {
   reviewListChangedFiles,
   reviewReadDiff,
@@ -12,6 +21,11 @@ import {
   reviewSearch,
   reviewGetRequirements,
 } from './context-reader';
+
+/** Endpoint capability learned once (strict json_schema → json_object → prompt). */
+const responseFormatCache = new Map<string, number>();
+/** `codex exec --output-schema` capability, keyed by binary path. */
+const codexOutputSchemaCache = new Map<string, boolean>();
 
 /**
  * Model inference runner abstraction.
@@ -24,11 +38,14 @@ import {
  */
 
 export interface ReviewPrompt {
-  role: 'reviewer-a' | 'reviewer-b' | 'adjudicator';
+  role: 'reviewer-a' | 'reviewer-b' | 'adjudicator' | 'governor' | 'sizer';
   system: string;
   user: string;
   providerID: string;
   modelID: string;
+  /** Optional strict JSON Schema for non-review structured probes (T-shirt sizing, etc.). */
+  jsonSchema?: Record<string, unknown>;
+  jsonSchemaName?: string;
   /** Reviewer execution mode:
    *  - 'snapshot-tools'  : register the read-only review_* tools over the frozen
    *                        snapshot (best when the endpoint's tool calling is
@@ -75,9 +92,12 @@ export function createFakeRunner(opts?: {
 }
 
 function buildFakeJson(role: ReviewPrompt['role']): string {
-  const reviewerIds = role === 'reviewer-a' ? ['A'] : role === 'reviewer-b' ? ['B'] : ['A', 'B'];
+  if (role === 'sizer') {
+    return JSON.stringify({ tshirt: 'M', confidence: 'high', rationale: 'deterministic fake sizing' });
+  }
+  const reviewerIds = role === 'reviewer-a' ? ['A'] : role === 'reviewer-b' ? ['B'] : role === 'governor' ? ['GOV'] : ['A', 'B'];
   const findings =
-    role === 'adjudicator'
+    role === 'adjudicator' || role === 'governor'
       ? [
           {
             id: `fnd-fake-${role}-1`,
@@ -202,6 +222,37 @@ export function createOpenAiRunner(provider: LocalProviderConfig, opts?: { timeo
     }
   }
 
+  /**
+   * Negotiate the strongest response_format the endpoint accepts.
+   *
+   * Chain: strict `json_schema` → `json_object` → prompt-only. The accepted index
+   * is cached per endpoint+model so an unsupported mode costs ONE rejected call
+   * per endpoint, not one per review. Only an explicit "unsupported" rejection
+   * downgrades; any other error surfaces unchanged (no silent degradation).
+   */
+  async function chatOnceStructured(
+    messages: Array<Record<string, unknown>>,
+    schema?: Record<string, unknown>,
+    schemaName?: string,
+  ): Promise<
+    | { ok: true; choices: Array<{ message: { content?: string | null; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } }
+    | { ok: false; error: string; status?: number }
+  > {
+    const key = `${apiBase}|${provider.modelID}|${schemaName ?? 'ReviewVerdict'}`;
+    const chain = structuredResponseFormatChain(schema ?? REVIEW_VERDICT_JSON_SCHEMA, schemaName ?? 'ReviewVerdict');
+    for (let index = responseFormatCache.get(key) ?? 0; index < chain.length; index++) {
+      const responseFormat = chain[index];
+      const res = await chatOnce({ messages, ...(responseFormat ? { response_format: responseFormat } : {}) });
+      if (res.ok) {
+        responseFormatCache.set(key, index);
+        return res;
+      }
+      if (index + 1 < chain.length && isUnsupportedStructuredOutput(res.status, res.error)) continue;
+      return res;
+    }
+    return chatOnce({ messages });
+  }
+
   async function chatOnce(body: Record<string, unknown>): Promise<
     | { ok: true; choices: Array<{ message: { content?: string | null; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } }
     | { ok: false; error: string; status?: number }
@@ -241,23 +292,30 @@ export function createOpenAiRunner(provider: LocalProviderConfig, opts?: { timeo
         { role: 'user', content: prompt.user },
       ];
       try {
+        // FROZEN-EVIDENCE (no tools): ONE structured turn. Negotiate the strongest
+        // response_format the endpoint supports — strict json_schema first, then
+        // json_object, then prompt-only. Unsupported modes are learned once per
+        // endpoint (responseFormatCache), never re-paid on every review.
+        if (!tools) {
+          const fmt = await chatOnceStructured(messages, prompt.jsonSchema, prompt.jsonSchemaName);
+          if (!fmt.ok) return { ok: false, text: '', error: fmt.error, tookMs: Date.now() - t0 };
+          const last = fmt.choices?.[0]?.message;
+          return {
+            ok: true,
+            text: last?.content ?? '',
+            tokensIn: fmt.usage?.prompt_tokens,
+            tokensOut: fmt.usage?.completion_tokens,
+            tookMs: Date.now() - t0,
+          };
+        }
+        // SNAPSHOT-TOOLS mode: bounded tool traversal. NEVER combine
+        // response_format with tools — tested: the model then skips tool_calls
+        // and emits an empty JSON object.
         let step = 0;
-        const MAX_TOOL_STEPS = 12; // bounded tool traversal
+        const MAX_TOOL_STEPS = 12;
         while (step < MAX_TOOL_STEPS) {
           step++;
-          const body: Record<string, unknown> = { messages };
-          if (tools) {
-            // NEVER combine response_format:json_object with tools — tested: the
-            // model then skips tool_calls and emits an empty JSON object. With
-            // tools present we rely on the reviewer system prompt's "return only
-            // JSON" + extractJsonObject's prose stripping for the final parse.
-            body['tools'] = tools;
-            body['tool_choice'] = 'auto';
-          } else {
-            // No tools: force strict JSON from the first turn (frozen-evidence mode).
-            body['response_format'] = { type: 'json_object' };
-          }
-          const res = await chatOnce(body);
+          const res = await chatOnce({ messages, tools, tool_choice: 'auto' });
           if (!res.ok) return { ok: false, text: '', error: res.error, tookMs: Date.now() - t0 };
 
           const last = res.choices?.[0]?.message;
@@ -304,7 +362,38 @@ export function createOpenAiRunner(provider: LocalProviderConfig, opts?: { timeo
  * first `agent_message` is parsed as the decision. No writable/stateful surface —
  * read-only sandbox, no file writes, no web.
  */
-export function createCodexRunner(opts?: { codexBin?: string; modelID?: string; timeoutMs?: number; workspaceHint?: string }): InferenceRunner {
+/**
+ * `codex exec --output-schema FILE` (codex-rs global flag) makes the CLI emit a
+ * final answer validated against the schema. Capability is probed ONCE per
+ * binary so an older codex silently keeps the prompt-level contract.
+ */
+function codexSupportsOutputSchema(bin: string): boolean {
+  const cached = codexOutputSchemaCache.get(bin);
+  if (cached !== undefined) return cached;
+  let supported = false;
+  try {
+    const r = spawnSync(bin, ['exec', '--help'], { encoding: 'utf8', timeout: 10_000, windowsHide: true });
+    supported = r.status === 0 && /--output-schema/.test(`${r.stdout ?? ''}${r.stderr ?? ''}`);
+  } catch {
+    supported = false;
+  }
+  codexOutputSchemaCache.set(bin, supported);
+  return supported;
+}
+
+/** Materialize the shared verdict JSON Schema for `--output-schema`. */
+function writeCodexOutputSchema(schema: Record<string, unknown> = REVIEW_VERDICT_JSON_SCHEMA): { file: string; cleanup(): void } | null {
+  try {
+    const dir = mkdtempSync(join(tmpdir(), 'helldesk-codex-schema-'));
+    const file = join(dir, 'review-verdict.schema.json');
+    writeFileSync(file, JSON.stringify(schema), 'utf8');
+    return { file, cleanup: () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } } };
+  } catch {
+    return null;
+  }
+}
+
+export function createCodexRunner(opts?: { codexBin?: string; modelID?: string; timeoutMs?: number; workspaceHint?: string; promptCharBudget?: number }): InferenceRunner {
   const model = opts?.modelID || 'gpt-6-luna';
   return {
     kind: 'codex',
@@ -332,22 +421,41 @@ export function createCodexRunner(opts?: { codexBin?: string; modelID?: string; 
         .trim();
       // Force the model to emit ONLY the strict JSON; gpt-6-luna reliably returns
       // it as the single agent_message.
-      const forced = [
-        toolFreeSystem || 'You are an adversarial reviewer.',
-        '',
-        'The complete immutable diff and requirements are embedded in the USER message (frozen evidence). No tools are available.',
-        prompt.user && prompt.user.trim() ? prompt.user.trim() : '',
-        '',
-        'Reports inspectedFiles = the number of distinct changed files you ACTUALLY reasoned over from the embedded diff (>=1 if any change present).',
-        'STRICT OUTPUT CONTRACT (mandatory): Reply with ONLY a single JSON object with EXACTLY these keys:',
-        '{"result":"PASS|FINDINGS|INCONCLUSIVE","coverage":{"changedFiles":<int>,"inspectedFiles":<int>,"uncoveredPaths":[]},"findings":[],"models":[]}',
-        'No prose, no markdown fences, no commentary before or after the JSON.',
-        'Verdict rule: if you inspected the embedded evidence (inspectedFiles>=1) and found NO supported BLOCKER/HIGH/MEDIUM finding, the result MUST be "PASS" — do NOT hedge to "INCONCLUSIVE" when the evidence is complete and clean. Use "INCONCLUSIVE" ONLY when you actually cannot determine correctness from the provided evidence. Use "FINDINGS" when you have a supported finding.',
-      ].filter(Boolean).join('\n').slice(0, 24_000);
+      const forced = (prompt.role === 'sizer'
+        ? [
+            toolFreeSystem || 'You are a task estimator.',
+            '',
+            prompt.user && prompt.user.trim() ? prompt.user.trim() : '',
+            '',
+            'STRICT OUTPUT CONTRACT (mandatory): Reply with ONLY a single JSON object with EXACTLY these keys:',
+            '{"tshirt":"XS|S|M|L|XL|XXL","confidence":"high|medium|low","rationale":"one short sentence"}',
+            'No prose, no markdown fences, no commentary before or after the JSON.',
+          ]
+        : [
+            toolFreeSystem || 'You are an adversarial reviewer.',
+            '',
+            'The complete immutable diff and requirements are embedded in the USER message (frozen evidence). No tools are available.',
+            prompt.user && prompt.user.trim() ? prompt.user.trim() : '',
+            '',
+            'Reports inspectedFiles = the number of distinct changed files you ACTUALLY reasoned over from the embedded diff (>=1 if any change present).',
+            'STRICT OUTPUT CONTRACT (mandatory): Reply with ONLY a single JSON object with EXACTLY these keys:',
+            '{"result":"PASS|FINDINGS|INCONCLUSIVE","coverage":{"changedFiles":<int>,"inspectedFiles":<int>,"uncoveredPaths":[]},"findings":[],"models":[]}',
+            'No prose, no markdown fences, no commentary before or after the JSON.',
+            'Verdict rule: if you inspected the embedded evidence (inspectedFiles>=1) and found NO supported BLOCKER/HIGH/MEDIUM finding, the result MUST be "PASS" — do NOT hedge to "INCONCLUSIVE" when the evidence is complete and clean. Use "INCONCLUSIVE" ONLY when you actually cannot determine correctness from the provided evidence. Use "FINDINGS" when you have a supported finding.',
+          ])
+        .filter(Boolean).join('\n').slice(0, opts?.promptCharBudget ?? 24_000);
 
       const timeoutMs = (opts?.timeoutMs ?? 120_000) + 15_000;
+      // Native structured verdict when the installed codex supports it; the
+      // strict-JSON prompt contract remains the fallback for older binaries.
+      const schema = codexSupportsOutputSchema(bin)
+        ? writeCodexOutputSchema(prompt.jsonSchema ?? REVIEW_VERDICT_JSON_SCHEMA)
+        : null;
+      const args = ['exec', '-m', model, '-C', ws, '-s', 'read-only', '--json', '--skip-git-repo-check'];
+      if (schema) args.push('--output-schema', schema.file);
+      args.push(forced);
       const outcome = await new Promise<{ ok: boolean; text: string; error?: string }>((resolve) => {
-        const child = spawn(bin, ['exec', '-m', model, '-C', ws, '-s', 'read-only', '--json', '--skip-git-repo-check', forced], {
+        const child = spawn(bin, args, {
           cwd: ws,
           windowsHide: true,
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -382,13 +490,22 @@ export function createCodexRunner(opts?: { codexBin?: string; modelID?: string; 
           finish({ ok: false, text: '', error: `codex reviewer produced no strict JSON (exit ${code}): ${(errBuf || out).slice(-400)}` });
         });
       });
+      schema?.cleanup();
       if (!outcome.ok) return { ok: false, text: outcome.text, error: outcome.error, tookMs: Date.now() - t0 };
       return { ok: true, text: outcome.text, tookMs: Date.now() - t0 };
     },
   };
 }
 
-/** Structured prompt assembly for each review stage. */
+/**
+ * Structured prompt assembly for each review stage.
+ *
+ * `promptCharBudget` is the tier-derived character budget for the whole user
+ * prompt. The diff is sliced to whatever remains after the requirements,
+ * changed-file list and framing, and a truncation marker records exactly how
+ * much evidence was withheld (so the reviewer can report honest coverage
+ * instead of pretending it saw everything).
+ */
 export function buildReviewUserPrompt(opts: {
   role: ReviewPrompt['role'];
   targetId: string;
@@ -397,18 +514,22 @@ export function buildReviewUserPrompt(opts: {
   changedFiles: string[];
   /** Controls the tool-instruction tail: snapshot-tools vs frozen-evidence. */
   reviewMode?: 'snapshot-tools' | 'frozen-evidence';
+  /** Tier-derived budget for the whole user prompt (chars). */
+  promptCharBudget?: number;
 }): string {
   const roleText =
     opts.role === 'reviewer-a'
       ? 'Correctness & scope'
       : opts.role === 'reviewer-b'
         ? 'Adversarial failure hunter'
-        : 'Adjudicator';
+        : opts.role === 'governor'
+          ? 'ExcellenceGovernor independent review'
+          : 'Adjudicator';
   const modeLine =
     opts.reviewMode === 'snapshot-tools'
       ? 'Use the provided review_* evidence tools to inspect files at pinned revisions. Produce the strict JSON result object.'
       : 'No review tools are available; the complete immutable diff and requirements above ARE your frozen evidence. Inspect them carefully and produce the strict JSON result object.';
-  return [
+  const head = [
     `# ${roleText} review of target ${opts.targetId}`,
     '',
     `## Requirements`,
@@ -419,9 +540,15 @@ export function buildReviewUserPrompt(opts: {
     '',
     `## Diff`,
     '```',
-    opts.diff.slice(0, 128 * 1024),
-    '```',
-    '',
-    modeLine,
   ].join('\n');
+  const tail = ['```', '', modeLine].join('\n');
+  const budget = opts.promptCharBudget && opts.promptCharBudget > 0
+    ? Math.trunc(opts.promptCharBudget)
+    : DEFAULT_REVIEW_PROMPT_CHAR_BUDGET;
+  const available = Math.max(0, budget - head.length - tail.length - REVIEW_PROMPT_OVERHEAD_CHARS);
+  const truncated = opts.diff.length > available;
+  const diffText = truncated
+    ? `${opts.diff.slice(0, available)}\n\n[diff truncated: showing ${available} of ${opts.diff.length} chars — context tier budget ${budget} chars. Report uncovered evidence honestly.]`
+    : opts.diff;
+  return [head, diffText, tail].join('\n');
 }

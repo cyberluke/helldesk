@@ -1,4 +1,4 @@
-# CyberLuke Local HELLDESK - install persistent Windows scheduled service for the
+# HELLDESK Local - install persistent Windows scheduled service for the
 # dashboard (:8790 local-live UI). Registers a user-level Scheduled Task that
 # starts the dashboard at logon and keeps it running INDEPENDENTLY of any VS Code
 # / Kilo window lifecycle and WITHOUT a console window (VBS -> hidden PS -> bun).
@@ -8,7 +8,7 @@
 $ErrorActionPreference = "Stop"
 $here    = Split-Path -Parent $MyInvocation.MyCommand.Path   # local-live/scripts
 $root    = Split-Path -Parent $here                          # local-live
-$taskName = "CyberLukeLocalHelldeskDashboard"
+$taskName = "HellDeskOperatorConsole"
 $userName = $env:USERNAME
 if (-not $userName) { $userName = (whoami) -replace '^\w+\\', '' }
 
@@ -26,7 +26,7 @@ if ($existing) {
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
     Write-Host "[install] Replaced existing task $taskName." -ForegroundColor Yellow
 }
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description "CyberLuke Local HELLDESK dashboard (local-live UI :8790) - persistent headless service" | Out-Null
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description "HELLDESK Local dashboard (local-live UI :8790) - persistent headless service" | Out-Null
 Write-Host "[install] Registered headless scheduled service '$taskName' (logon start, auto-restart, zero-window)." -ForegroundColor Green
 
 Start-ScheduledTask -TaskName $taskName

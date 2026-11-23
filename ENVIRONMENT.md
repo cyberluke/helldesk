@@ -1,6 +1,6 @@
 # Environment Variables
 
-Canonical environment variable catalog for the **HELLDESK** repo (`cyberluke/helldesk`). This file describes the environment consumed directly by this repository's code across its three execution homes:
+Canonical environment variable catalog for the **HELLDESK** repo. This file describes the environment consumed directly by this repository's code across its three execution homes:
 
 - **Local control plane** (`services/helldesk/local`) — native Bun adversarial-review engine + Kilo plugin.
 - **Local federated runtime / operator UI** (`services/helldesk/local-live`) — dual-home domain adapter + operator console.

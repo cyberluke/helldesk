@@ -13,6 +13,8 @@
  */
 import { useMemo } from 'react';
 import { api, setWorkstationDepartmentIndex, type Department, type Workstation, type LooseTicket, type LooseAgent, type DepartmentEvent, type DepartmentConfig } from './transport';
+import type { ObservabilitySnapshot } from './observability';
+import type { CommitDetail, CommitFileDiff, CommitList, CommitProvenance, CommitWorkspace } from './commits';
 
 export type { Department, Workstation, LooseTicket as Ticket, LooseAgent as Agent, DepartmentEvent, DepartmentConfig };
 
@@ -21,13 +23,6 @@ export type { Department, Workstation, LooseTicket as Ticket, LooseAgent as Agen
 // the original client. Each proc is a plain function object with the three
 // accessors the components rely on. Because react-query v5's `queryOptions`
 // takes a plain object, we build those objects directly.
-
-function qOpts<T>(queryKey: unknown[], fn: () => Promise<T>) {
-  return {
-    queryKey,
-    queryFn: (): Promise<T> => fn(),
-  };
-}
 
 // ---- workstationId → departmentId hydration -------------------------------------------------
 // Original tRPC procs key workstation work by workstationId only; local-live routes need the
@@ -46,8 +41,38 @@ export function indexWorkstationDepartments(departments: Department[], workstati
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const _unused = workstationDepartmentIndex;
 
+/**
+ * Typed view of one procedure while the rest of the shim keeps its permissive
+ * `Record<string, unknown>` surface (the original federated components rely on
+ * that permissiveness). This is the procedure the new Observability surface uses.
+ */
+export interface ObservabilityProcedure {
+  queryOptions: (input: { departmentId: string }) => {
+    queryKey: unknown[];
+    queryFn: () => Promise<ObservabilitySnapshot>;
+  };
+}
+
+export interface QueryProcedure<I, O> {
+  queryOptions: (input: I) => {
+    queryKey: unknown[];
+    queryFn: () => Promise<O>;
+  };
+}
+
+export interface CommitProcedures {
+  listCommitWorkspaces: QueryProcedure<Record<string, never>, CommitWorkspace[]>;
+  listCommitProvenance: QueryProcedure<{ workspaceId: string }, CommitProvenance[]>;
+  listCommits: QueryProcedure<{ workspaceId: string; limit?: number }, CommitList>;
+  getCommit: QueryProcedure<{ workspaceId: string; sha: string }, CommitDetail>;
+  getCommitFileDiff: QueryProcedure<
+    { workspaceId: string; sha: string; path: string; oldPath?: string | null; context?: number },
+    CommitFileDiff
+  >;
+}
+
 export function useTRPC(): {
-  helldesk: Record<string, unknown>;
+  helldesk: Record<string, unknown> & { getDepartmentObservability: ObservabilityProcedure } & CommitProcedures;
   cloudAgent: Record<string, unknown>;
 } {
   return useMemo(() => {
@@ -58,13 +83,26 @@ export function useTRPC(): {
       getDepartment: withInput('getDepartment', (i) => api.getDepartment(i.departmentId)),
       listWorkstations: withInput('listWorkstations', (i) => api.listWorkstations(i.departmentId)),
       getWorkstation: withInput('getWorkstation', (i) => api.getWorkstation(i.workstationId)),
-      listTickets: withInput('listTickets', (i) => api.listTickets(i.departmentId ?? 'default', i.workstationId)),
+      listTickets: withInput('listTickets', (i) => api.listTickets(i.departmentId ?? 'default', i.workstationId, i.includeArchived)),
       createTicket: withInput('createTicket', (i) => api.createTicket(i.departmentId ?? 'default', i.workstationId, i)),
       sling: withInput('sling', (i) => api.sling(i.departmentId ?? 'default', i.workstationId, i)),
       deleteTicket: withInput('deleteTicket', (i) => api.deleteTicket(i.departmentId ?? 'default', i.workstationId, i.ticketId)),
+      archiveTickets: withInput('archiveTickets', (i) => api.archiveTickets(i.departmentId ?? 'default', { ticketIds: i.ticketIds, archived: i.archived })),
+      updateTicketStatus: withInput('updateTicketStatus', (i) => api.updateTicketStatus(i.departmentId ?? 'default', i.workstationId, i.ticketId, i.status)),
       listAgents: withInput('listAgents', (i) => api.listAgents(i.departmentId ?? 'default', i.workstationId)),
+      listDepartmentAgents: withInput('listDepartmentAgents', (i) => api.listDepartmentAgents(i.departmentId ?? 'default')),
+      createAgent: withInput('createAgent', (i) => api.createAgent(i.departmentId ?? 'default', i.workstationId, { role: i.role, name: i.name, identity: i.identity })),
       deleteAgent: withInput('deleteAgent', (i) => api.deleteAgent(i.departmentId ?? 'default', i.workstationId, i.agentId)),
       getDepartmentEvents: withInput('getDepartmentEvents', (i) => api.listDepartmentEvents(i.departmentId, { limit: i.limit })),
+      getDepartmentObservability: withInput('getDepartmentObservability', () => api.getObservability()),
+      // Read-only git commit observability.
+      listCommitWorkspaces: withInput('listCommitWorkspaces', () => api.listCommitWorkspaces()),
+      listCommitProvenance: withInput('listCommitProvenance', (i) => api.listCommitProvenance(i.workspaceId)),
+      listCommits: withInput('listCommits', (i) => api.listCommits(i.workspaceId, i.limit ?? 80)),
+      getCommit: withInput('getCommit', (i) => api.getCommit(i.workspaceId, i.sha)),
+      getCommitFileDiff: withInput('getCommitFileDiff', (i) =>
+        api.getCommitFileDiff(i.workspaceId, i.sha, i.path, i.oldPath, i.context ?? 3)
+      ),
       getTicketEvents: withInput('getTicketEvents', (i) => api.listTicketEvents(i.departmentId ?? 'default', i.workstationId, { ticketId: i.ticketId })),
       getDepartmentConfig: withInput('getDepartmentConfig', (i) => api.getDepartmentConfig(i.departmentId)),
       updateDepartmentConfig: withInput('updateDepartmentConfig', (i) => api.updateDepartmentConfig(i.departmentId, i.config)),
@@ -88,7 +126,12 @@ export function useTRPC(): {
       listGitLabRepositories: withInput('listGitLabRepositories', async () => ({ repositories: [], instanceUrl: '' })),
     };
 
-    return { helldesk, cloudAgent };
+    return {
+      helldesk: helldesk as Record<string, unknown> & {
+        getDepartmentObservability: ObservabilityProcedure;
+      } & CommitProcedures,
+      cloudAgent,
+    };
   }, []);
 }
 

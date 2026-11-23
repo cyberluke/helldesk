@@ -1,8 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { ensureHiddenChildSpawns } from './windows-spawn';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import type { Db } from './db';
+import type { ContextBudget } from './context-tiers';
 import { now, generateId } from './ids';
 
 /**
@@ -26,22 +28,99 @@ const WORKER_ENTRY = fileURLToPath(new URL('./worker.ts', import.meta.url));
 
 let running = new Map<string, ChildProcess>();
 
+export interface WorkerResult {
+  text: string;
+  tokensIn?: number;
+  tokensOut?: number;
+}
+
 interface PendingWait {
-  resolve: (value: string) => void;
+  resolve: (value: WorkerResult) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  cleanup: () => void;
 }
+/** Terminate the live worker processes for a job and close their rows.
+ *  Used when a revision is rejected/superseded: a stale review must not keep
+ *  burning inference or show 'active' in the crew. */
+export function terminateWorkersForJob(d: Db, jobId: string, reason: string): void {
+  const rows = d.db
+    .query<{ worker_id: string }, [string]>(
+      `SELECT worker_id FROM workers WHERE job_id=? AND status IN ('running','launching')`
+    )
+    .all(jobId);
+  const nowIso = new Date().toISOString();
+  for (const row of rows) {
+    const child = running.get(row.worker_id);
+    if (child) {
+      try { child.kill(); } catch { /* already gone */ }
+    }
+    d.db
+      .query(`UPDATE workers SET status='terminated', finished_at=COALESCE(finished_at, ?), error=COALESCE(error, ?) WHERE worker_id=?`)
+      .run(nowIso, reason, row.worker_id);
+  }
+}
+
 /** In-process waiters keyed by attemptId so the control plane can await a
  *  detached worker's frozen result text (resolved by acceptWorkerResult). */
 const waits = new Map<string, PendingWait>();
 
-export function awaitWorkerResult(attemptId: string, timeoutMs = 600_000): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => {
+/**
+ * Await a detached worker's frozen result text.
+ *
+ * FAST-FAIL: when the DB handle is supplied, poll the worker's row and reject as
+ * soon as the process is terminated/failed instead of waiting out the full
+ * timeout. A dead worker used to hold the controller for the whole bound
+ * (observed: 25-minute dead waits), stalling every mission behind it.
+ */
+export function awaitWorkerResult(
+  attemptId: string,
+  timeoutMs = 600_000,
+  opts?: { d?: Db; pollMs?: number }
+): Promise<WorkerResult> {
+  return new Promise<WorkerResult>((resolve, reject) => {
+    let settled = false;
+    let poll: ReturnType<typeof setInterval> | undefined;
+    const cleanup = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (poll) clearInterval(poll);
       waits.delete(attemptId);
-      reject(new Error(`worker ${attemptId} timed out`));
-    }, timeoutMs);
-    waits.set(attemptId, { resolve, reject, timer });
+    };
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      cleanup();
+      fn();
+    };
+    const timer = setTimeout(() => settle(() => reject(new Error(`worker ${attemptId} timed out`))), timeoutMs);
+    if (opts?.d) {
+      const d = opts.d;
+      const pollMs = Math.max(500, opts.pollMs ?? 2000);
+      poll = setInterval(() => {
+        if (settled) return;
+        try {
+          const row = d.db
+            .query<{ status: string; error: string | null; exit_code: number | null }, [string]>(
+              `SELECT status, error, exit_code FROM workers WHERE attempt_id=? ORDER BY rowid DESC LIMIT 1`
+            )
+            .get(attemptId);
+          if (!row) return;
+          if (['terminated', 'failed', 'aborted'].includes(row.status)) {
+            const why = row.error ? `: ${row.error}` : row.exit_code != null ? ` (exit ${row.exit_code})` : '';
+            settle(() => reject(new Error(`worker ${attemptId} ${row.status}${why}`)));
+          }
+        } catch {
+          /* poll errors are ignored */
+        }
+      }, pollMs);
+    }
+    waits.set(attemptId, {
+      resolve: (value) => settle(() => resolve(value)),
+      reject: (err) => settle(() => reject(err)),
+      timer,
+      cleanup,
+    });
   });
 }
 
@@ -49,10 +128,12 @@ export function spawnReviewWorker(opts: {
   d: Db;
   jobId: string;
   attemptId: string;
-  role: 'reviewer-a' | 'reviewer-b' | 'adjudicator';
+  role: 'reviewer-a' | 'reviewer-b' | 'adjudicator' | 'governor';
   snapshotId: string;
   store: string;
   model: { providerID: string; modelID: string };
+  /** Resolved tier budget so the worker uses the SAME window/limits as the daemon. */
+  contextBudget?: ContextBudget;
   runner: 'openai' | 'fake' | 'kilo' | 'codex';
   baseURL?: string;
   apiKey?: string;
@@ -86,6 +167,14 @@ export function spawnReviewWorker(opts: {
     '--token', opts.controlToken,
     '--workspace', opts.workspace,
   ];
+  if (opts.contextBudget) {
+    args.push(
+      '--contextTier', opts.contextBudget.tier,
+      '--contextWindow', String(opts.contextBudget.contextWindow),
+      '--maxOutputTokens', String(opts.contextBudget.outputBudgetTokens),
+      '--promptCharBudget', String(opts.contextBudget.userPromptCharBudget)
+    );
+  }
   if (opts.runner === 'openai' || opts.runner === 'kilo' || opts.runner === 'codex') {
     args.push('--baseURL', opts.baseURL ?? '');
     if (opts.apiKey) args.push('--apiKey', opts.apiKey);
@@ -101,14 +190,27 @@ export function spawnReviewWorker(opts: {
       args.push('--snapshotStore', opts.store);
     }
   }
-  if (opts.userOverride) args.push('--userOverride', opts.userOverride);
+  // A combined adjudicator prompt can be tens/hundreds of KB at high tiers.
+  // Passing it as argv hits the Windows 32K command-line cap and spawn fails
+  // (E2BIG / invalid argument), so hand big prompts over through a file.
+  if (opts.userOverride) {
+    const promptDir = join(opts.store, opts.snapshotId, 'prompts');
+    mkdirSync(promptDir, { recursive: true });
+    const promptPath = join(promptDir, `${opts.attemptId}.user.txt`);
+    writeFileSync(promptPath, opts.userOverride, 'utf-8');
+    args.push('--userOverrideFile', promptPath);
+  }
 
   // For codex review, expose the codex binary to the detached worker via env
   // (matching the codex mutation child contract) so it can `codex exec`.
   const childEnv: Record<string, string | undefined> = { ...process.env };
   if (opts.runner === 'codex' && opts.kiloBin) childEnv.GT_CODEX_BIN = opts.kiloBin;
 
-  const child = spawn('bun', args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true, windowsHide: true, env: childEnv });
+  ensureHiddenChildSpawns();
+  // Node documents that a DETACHED Windows child gets its OWN console window, and
+  // windowsHide alone still flashes it. Keep the worker process independent
+  // (own PID) WITHOUT a console: no detached on Windows, no visible window.
+  const child = spawn('bun', args, { stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true, env: childEnv });
   running.set(workerId, child);
   child.unref();
   opts.d.db.query(`UPDATE workers SET pid=?, status='running' WHERE worker_id=?`).run(child.pid ?? -1, workerId);
@@ -156,13 +258,15 @@ export function acceptWorkerResult(opts: {
   resultPath: string;
   providerID: string;
   modelID: string;
+  tokensIn?: number;
+  tokensOut?: number;
 }): { ok: boolean; stale: boolean; reason?: string } {
   // Fencing: only a worker belonging to the CURRENT, non-terminal job may apply.
   // Worker stages are tracked in `workers` (each independent process); a worker
   // that already succeeded, or belongs to a terminal job, is stale.
   const st = opts.d.db
-    .query<{ status: string; job_state: string; worker_id: string | null }, [string, string]>(
-      `SELECT w.status, j.state AS job_state, w.worker_id
+    .query<{ status: string; job_state: string; worker_id: string | null; started_at: string | null }, [string, string]>(
+      `SELECT w.status, j.state AS job_state, w.worker_id, w.started_at
        FROM workers w JOIN review_jobs j ON j.job_id = w.job_id
        WHERE w.attempt_id=? AND w.job_id=?`
     )
@@ -184,20 +288,30 @@ export function acceptWorkerResult(opts: {
   // Store stage outcome (current attempt).
   opts.d.db
     .query(
-      `INSERT OR REPLACE INTO agent_runs (run_id, job_id, role, provider_id, model_id, status, started_at, finished_at, raw_output_path)
-       VALUES (?,?,?,?,?, 'succeeded', ?, ?, ?)`
+      `INSERT OR REPLACE INTO agent_runs
+         (run_id, job_id, role, provider_id, model_id, status, started_at, finished_at, raw_output_path, tokens_in, tokens_out)
+       VALUES (?,?,?,?,?, 'succeeded', ?, ?, ?, ?, ?)`
     )
-    .run(`${opts.jobId}:${opts.attemptId}:${opts.role}`, opts.jobId, opts.role, opts.providerID, opts.modelID, now(), now(), opts.resultPath);
+    .run(
+      `${opts.jobId}:${opts.attemptId}:${opts.role}`,
+      opts.jobId,
+      opts.role,
+      opts.providerID,
+      opts.modelID,
+      st.started_at ?? now(),
+      now(),
+      opts.resultPath,
+      opts.tokensIn ?? null,
+      opts.tokensOut ?? null,
+    );
   // Resolve any awaiting controller with the worker's frozen text.
   const wait = waits.get(opts.attemptId);
   if (wait) {
-    clearTimeout(wait.timer);
-    waits.delete(opts.attemptId);
     try {
       const parsed = JSON.parse(blob) as { text?: string; resultPath?: string };
-      wait.resolve(parsed.text ?? readFileSync(opts.resultPath, 'utf-8'));
+      wait.resolve({ text: parsed.text ?? readFileSync(opts.resultPath, 'utf-8'), tokensIn: opts.tokensIn, tokensOut: opts.tokensOut });
     } catch {
-      wait.resolve(blob);
+      wait.resolve({ text: blob, tokensIn: opts.tokensIn, tokensOut: opts.tokensOut });
     }
   }
   return { ok: true, stale: false };

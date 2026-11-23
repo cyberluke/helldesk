@@ -6,3 +6,7 @@ data/
 *.sqlite-shm
 storage-*.json
 node_modules/
+# launcher runtime artifacts
+dashboard.log
+dashboard.log.err
+dashboard.pid

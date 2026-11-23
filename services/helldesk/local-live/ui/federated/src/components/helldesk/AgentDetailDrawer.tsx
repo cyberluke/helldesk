@@ -30,7 +30,7 @@ type AgentDetailDrawerProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   agent: Agent | null;
-  workstationId: string;
+  workstationId?: string;
   onConnect?: (agentId: string, agentName: string) => void;
   onDelete?: () => void;
 };
@@ -68,8 +68,8 @@ export function AgentDetailDrawer({
 
   // Fetch related tickets for this agent
   const ticketsQuery = useQuery({
-    ...trpc.helldesk.listTickets.queryOptions({ workstationId }),
-    enabled: open && Boolean(agent),
+    ...trpc.helldesk.listTickets.queryOptions({ workstationId: workstationId ?? '' }),
+    enabled: open && Boolean(agent) && Boolean(workstationId),
     refetchInterval: 8_000,
   });
 
@@ -296,3 +296,4 @@ function TicketRow({ ticket }: { ticket: Ticket }) {
     </div>
   );
 }
+

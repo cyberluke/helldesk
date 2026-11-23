@@ -66,6 +66,24 @@ export const ReviewReportSchema = z.object({
   attempts: z.array(z.number().int()).default([]),
   createdAt: z.string(),
   completedAt: z.string(),
+  /** Which independent review stages actually ran for this verdict. */
+  policy: z
+    .object({
+      summary: z.string(),
+      reviewerA: z.boolean(),
+      reviewerB: z.boolean(),
+      governor: z.boolean(),
+      controls: z.record(z.string(), z.unknown()).optional(),
+    })
+    .optional(),
+  /** Per-role usage rolled up from agent_runs (null = not reported by the runner). */
+  cost: z
+    .object({
+      tokensIn: z.number().nullable(),
+      tokensOut: z.number().nullable(),
+      cost: z.number().nullable(),
+    })
+    .optional(),
 });
 
 export type ReviewReport = z.infer<typeof ReviewReportSchema>;

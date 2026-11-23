@@ -1,4 +1,4 @@
-# CyberLuke Local HELLDESK — windowless daemon launcher (proper backend/service).
+# HELLDESK Local — windowless daemon launcher (proper backend/service).
 #
 # Launches the persistent control plane as a HEADSOCK background process that
 # never allocates a console window. Used by the scheduled task and by
@@ -26,7 +26,24 @@ if (-not (Test-Path $Config)) {
     exit 2
 }
 
-$bun = (Get-Command bun -ErrorAction Stop).Source
+$bunCmd = Get-Command bun -ErrorAction SilentlyContinue
+if ($bunCmd) {
+    $bun = $bunCmd.Source
+} else {
+    # Scheduled tasks do not always inherit the interactive PATH; check the
+    # official user install and common machine-wide package locations.
+    $candidates = @(
+        (Join-Path $env:USERPROFILE ".bun\bin\bun.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\bun\bun.exe"),
+        (Join-Path $env:LOCALAPPDATA "UniGetUI\Chocolatey\bin\bun.exe"),
+        (Join-Path $env:ProgramData "chocolatey\bin\bun.exe")
+    )
+    $bun = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+}
+if (-not $bun -or -not (Test-Path -LiteralPath $bun)) {
+    Write-Error "[daemon-hidden] bun not found. Install Bun or add it to PATH."
+    exit 2
+}
 # Start-Process requires DISTINCT stdout and stderr targets (same-file redirect
 # is rejected). Keep both logs side by side in the daemon directory.
 $out = Join-Path $root "daemon.out.log"

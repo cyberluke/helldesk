@@ -31,6 +31,7 @@ export function loadConfigLegacy(runner: 'fake' | 'openai' | 'kilo' = 'fake', op
       reviewerModel: opts?.reviewerModel,
       strictCoverage: true,
     },
+    context: { tier: 'auto', charsPerToken: 4, promptUtilization: 0.9 },
     autonomy: {
       enabled: false,
       mutationRunner: 'kilo',

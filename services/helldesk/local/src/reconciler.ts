@@ -37,13 +37,20 @@ export function acquireLease(d: Db, purpose: string, owner: string, ttlMs: numbe
   const leaseId = `lease_${generateId().slice(0, 20)}`;
   const exp = new Date(Date.now() + ttlMs).toISOString();
   const hb = now();
-  // Precondition: a live lease for the same purpose+owner must not already exist.
-  const existing = d.db
-    .query<{ lease_id: string; expires_at: string }, [string, string]>(
-      `SELECT lease_id, expires_at FROM leases WHERE owner=? AND leasee=? LIMIT 1`
+  // Precondition: a LIVE lease for the same purpose+owner must not already exist.
+  // Query only unexpired rows: an old expired row must never mask a live lease
+  // (LIMIT 1 without the expiry filter did exactly that, letting two review
+  // executions own the same job at once — duplicate leases, duplicate attempts,
+  // duplicate workers).
+  const live = d.db
+    .query<{ lease_id: string }, [string, string, string]>(
+      `SELECT lease_id FROM leases WHERE owner=? AND leasee=? AND expires_at > ? ORDER BY expires_at DESC LIMIT 1`
     )
-    .get(owner, purpose);
-  if (existing && existing.expires_at > now()) return null; // held
+    .get(owner, purpose, hb);
+  if (live) return null; // held by a live owner
+  // Housekeeping: expired rows for this owner are dead; remove them so they can
+  // never shadow a future acquisition.
+  d.db.query(`DELETE FROM leases WHERE owner=? AND leasee=? AND expires_at <= ?`).run(owner, purpose, hb);
   d.db
     .query(
       `INSERT INTO leases (lease_id, owner, expires_at, heartbeat_at, leasee)

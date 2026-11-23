@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { makeGitFixture } from '../tests/helpers';
 
 const BASE = process.env.GT_BASE ?? 'http://127.0.0.1:4790';
-const DD = 'C:\\Users\\lukes.COREI9\\AppData\\Local\\CyberLuke\\LocalGasDepartment';
+const DD = 'C:\\Users\\lukes.COREI9\\AppData\\Local\\HELLDESK\\LocalDepartment';
 const token = readFileSync(join(DD, 'token'), 'utf-8').trim();
 const A = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 const get = (p: string) => fetch(BASE + p).then((r) => r.json()).catch(() => null);
@@ -43,8 +43,8 @@ console.log('[report] models (provenance):', JSON.stringify(report?.models ?? re
 console.log('[report] findings count=', (report?.findings ?? []).length);
 console.log('[report] synthetic?=', report?.synthetic ?? '(no synthetic flag, real)');
 
-// The report should record real provider/model provenance (litellm-edge/differential_sseproxy plugin -> deepseek backend).
+// The report should record real provider/model provenance (openai-compatible-edge/demo-model plugin -> deepseek backend).
 const models = report?.models ?? [];
-const hasReal = models.some((m: any) => m && /litellm|deepseek|differential_sseproxy/.test(JSON.stringify(m)));
+const hasReal = models.some((m: any) => m && /openai-compatible|deepseek|demo-model/.test(JSON.stringify(m)));
 console.log('[verify] real provenance present:', hasReal ? 'YES' : 'NO');
 console.log('DONE');

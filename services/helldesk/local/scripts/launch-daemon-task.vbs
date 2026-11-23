@@ -1,4 +1,4 @@
-' CyberLuke Local HELLDESK — zero-window scheduled-task launcher.
+' HELLDESK Local — zero-window scheduled-task launcher.
 ' Task Scheduler invokes this via wscript.exe. WScript.Shell.Run with window
 ' style 0 (SW_HIDE) + bWaitOnReturn=False starts the proper hidden daemon
 ' wrapper fully detached from any console: NOTHING ever appears on any desktop

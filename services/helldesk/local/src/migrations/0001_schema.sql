@@ -1,4 +1,4 @@
--- CyberLuke Local HELLDESK schema (v1)
+-- HELLDESK Local schema (v1)
 -- SQLite WAL schema for the local orchestration control plane.
 -- Ported from helldesk's durable job/review semantics to a single-file
 -- SQLite database. One logical operation = one authoritative row + CAS

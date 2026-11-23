@@ -15,12 +15,17 @@ import {
 import { acceptWorkerResult } from './worker-supervisor';
 import { TaskReconciler } from './task-reconciler';
 import { advanceMission } from './mission-controller';
-import { makeControllerDeps } from './engine-review-hook';
+import { makeControllerDeps, resolveEffectiveModelRoute } from './engine-review-hook';
+import { resolveAndApplyKiloBinary } from './kilo-binary';
+import { propagateEngineRoute } from './config-propagation';
+import { resumeMissionState } from './mission-repository';
+import { sweepStaleReviewJobs } from './mission-controller';
+import { reviewRetryDue, REVIEW_MAX_ATTEMPTS } from './review-retry';
 import { z } from 'zod';
 import { commitEvent, getHostState, upsertHostState, eventsForSession } from './event-journal';
 
 /**
- * CyberLuke Local HELLDESK CONTROL PLANE (standalone, persistent).
+ * HELLDESK Local CONTROL PLANE (standalone, persistent).
  *
  * A single per-user process that OWNS the SQLite DB, port 4789, the global
  * scheduler, the host/session registry, and detached review workers. It is
@@ -134,12 +139,50 @@ function releaseSingletonLock(lockPath: string): void {
   } catch { /* noop */ }
 }
 
+/**
+ * Resolve the Kilo CLI (no pinned extension version) and validate the effective
+ * model BEFORE the Engine/controller reads the config. Fail closed with a
+ * precise message when a Kilo-backed stage has no binary or no model.
+ */
+function applyRuntimeBinariesAndValidateModel(config: Config): void {
+  const binaries = resolveAndApplyKiloBinary(config);
+  for (const [stage, found] of Object.entries(binaries)) {
+    if (found && found.source !== 'configured') {
+      console.log(
+        `[helldesk] kilo ${stage} binary resolved (${found.source}${found.version ? ` ${found.version}` : ''}) -> ${found.path}`,
+      );
+    }
+  }
+
+  const reviewerRoute = config.policy.reviewerModel ?? resolveEffectiveModelRoute({});
+  if (config.policy.runner === 'kilo' && (!reviewerRoute.providerID || !reviewerRoute.modelID)) {
+    throw new Error(
+      'No default Kilo model configured. Set "model": "provider/model" in ~/.config/kilo/kilo.jsonc ' +
+        '(or policy.reviewerModel). No LiteLLM/local fallback is assumed.',
+    );
+  }
+
+  if (config.autonomy.enabled !== false && config.autonomy.mutationRunner === 'kilo') {
+    const mutationRoute = resolveEffectiveModelRoute({
+      providerID: config.autonomy.providerID,
+      modelID: config.autonomy.modelID,
+    });
+    if (!mutationRoute.providerID || !mutationRoute.modelID) {
+      throw new Error(
+        'No default Kilo model configured for the mutation runner. Set "model": "provider/model" ' +
+          'in ~/.config/kilo/kilo.jsonc (or autonomy.providerID/modelID).',
+      );
+    }
+  }
+}
+
 export async function startDaemon(opts?: {
   configPath?: string;
   config?: Config;
   runnerOverride?: ReturnType<typeof makeRunner> | null;
 }): Promise<DaemonRuntime> {
   const config = opts?.config ?? loadConfig(opts?.configPath);
+  applyRuntimeBinariesAndValidateModel(config);
   // The runtime config store owns the SAME mutable Config object the Engine and
   // the daemon loops read, so a live PATCH /v1/config applies by reference.
   const configStore = newRuntimeConfigStore({
@@ -167,12 +210,19 @@ export async function startDaemon(opts?: {
   d.runMigration();
 
   const resolvedModels = new Map<string, { providerID: string; modelID: string }>();
-  if (config.policy.reviewerModel) resolvedModels.set('inherited', config.policy.reviewerModel);
+  // Reviewer/adjudicator roles follow the operator's effective Kilo default model
+  // (`~/.config/kilo/kilo.json(c)` `.model`) unless a role is pinned explicitly.
+  // This is the same inheritance the writable mutation session already uses, so a
+  // global provider/model switch refreshes BOTH boundaries together.
+  resolvedModels.set('inherited', config.policy.reviewerModel ?? resolveEffectiveModelRoute({}));
 
   const telemetry = createTelemetry({ logDir });
   const runner = opts?.runnerOverride ?? makeRunner(config, telemetry);
   const engine = new Engine({ d, config, snapshotStore, reportDir, runner, resolvedModels });
-  engine.onStartup();
+  const startup = engine.onStartup();
+  if (startup.mutationLeases > 0) {
+    console.log(`[helldesk] cleared ${startup.mutationLeases} stale mutation-writer lease(s) from the previous process`);
+  }
   engine.reload();
 
   const token = config.daemon.token ?? ensureToken(dataDir);
@@ -273,12 +323,21 @@ export async function serve(opts?: {
     while (running.size < maxJobs) {
       const q = queueStat(rt.engine);
       if (q.queued === 0) break;
+      // Pick the first QUEUED job whose retry backoff has elapsed. A failing
+      // governor used to be requeued instantly: 118 attempts in ~90 minutes,
+      // each looking like a model turn. Attempts now back off exponentially and
+      // stop at a hard cap; the attempt rows remain visible in Observability.
       const next = rt.engine.d.db
-        .query<{ job_id: string }, []>(
-          `SELECT job_id FROM review_jobs WHERE state='QUEUED' ORDER BY requested_at ASC LIMIT 1`
+        .query<{ job_id: string; attempt_count: number; updated_at: string | null }, []>(
+          `SELECT job_id, attempt_count, updated_at FROM review_jobs WHERE state='QUEUED' ORDER BY requested_at ASC LIMIT 50`
         )
-        .get();
+        .all()
+        .find((job) => reviewRetryDue(job.attempt_count, job.updated_at));
       if (!next) break;
+      if (next.attempt_count >= REVIEW_MAX_ATTEMPTS) {
+        rt.engine.failRetryBudget(next.job_id);
+        continue;
+      }
       const p = rt.engine.executeQueuedJob(next.job_id).catch((err) => {
         console.error(`[helldesk] job ${next.job_id} failed:`, err?.message ?? err);
       });
@@ -299,9 +358,50 @@ export async function serve(opts?: {
   // gate and the mission deps are rebuilt LIVE from the runtime config each tick
   // so toggling autonomy / its model route via /v1/config applies immediately.
   const activeMissionRuns = new Set<string>();
+  // CONFIG PROPAGATION: engine matrices are creation-time snapshots, so a
+  // provider/model switch must be pushed to every queued/in-progress task or they
+  // keep using a stale (or dead) endpoint. Startup + a 60s reconcile (and the
+  // /v1/config patch path) keep them on the CURRENT effective route.
+  let lastRouteKey = '';
+  let lastRouteCheck = 0;
+  const syncEngineRoute = () => {
+    const cfgNow = rt.configStore.get();
+    const route = resolveEffectiveModelRoute({ providerID: cfgNow.autonomy.providerID, modelID: cfgNow.autonomy.modelID });
+    const key = `${route.providerID}/${route.modelID}`;
+    if (key === lastRouteKey) return;
+    lastRouteKey = key;
+    const res = propagateEngineRoute(rt.d, route);
+    if (res.updated) console.log(`[helldesk] engine route propagated to ${res.updated}/${res.total} non-terminal missions: ${key}`);
+  };
+  syncEngineRoute();
   const missionTick = setInterval(async () => {
     const liveCfg = rt.configStore.get();
     if (!liveCfg.autonomy.enabled) return;
+    if (Date.now() - lastRouteCheck > 60_000) {
+      lastRouteCheck = Date.now();
+      syncEngineRoute();
+    }
+    // STALE REVIEW SWEEP: a rejected/superseded revision must not keep reviewers
+    // running (or look active) while the mission moved on.
+    try {
+      const cancelled = sweepStaleReviewJobs(rt.d);
+      if (cancelled) console.log(`[helldesk] cancelled ${cancelled} stale review job(s)`);
+    } catch (err) {
+      console.error('[helldesk-autonomy] stale review sweep failed', err instanceof Error ? err.message : String(err));
+    }
+    // AUTO-RETRY: bounded resume for TRANSIENT BLOCKED_EXTERNAL missions.
+    try {
+      const dueRetries = rt.d.db
+        .query<{ mission_id: string }, [string]>(
+          `SELECT mission_id FROM autonomy_missions WHERE state='BLOCKED_EXTERNAL' AND next_retry_at IS NOT NULL AND next_retry_at <= ?`
+        )
+        .all(new Date().toISOString());
+      for (const row of dueRetries) {
+        if (resumeMissionState(rt.d, row.mission_id)) console.log(`[helldesk] auto-retry resumed ${row.mission_id}`);
+      }
+    } catch (err) {
+      console.error('[helldesk-autonomy] auto-retry sweep failed', err instanceof Error ? err.message : String(err));
+    }
     try {
       const active = rt.d.db.query<{ mission_id: string; task_gates_json: string }, []>(
         `SELECT mission_id, task_gates_json FROM autonomy_missions WHERE state IN ('ACTIVE','PLANNING','MUTATING','CAPTURING_EVIDENCE','VERIFYING','REPLANNING')`
@@ -313,12 +413,12 @@ export async function serve(opts?: {
         const deps = makeControllerDeps(rt.engine, { ...liveCfg.autonomy, taskGates: gates.length ? gates : liveCfg.autonomy.taskGates, verifyMode: liveCfg.policy.verifyMode });
         activeMissionRuns.add(m.mission_id);
         void advanceMission(m.mission_id, deps)
-          .catch(err => console.error('[helldesk-autonomy]', err instanceof Error ? err.message : 'Mission failed'))
+          .catch(err => console.error('[helldesk-autonomy]', err instanceof Error ? (err.stack ?? err.message) : 'Mission failed'))
           .finally(() => activeMissionRuns.delete(m.mission_id));
       }
     } catch (err) {
       // A transient controller error must not kill the autonomy loop.
-      console.error('[helldesk-autonomy]', err instanceof Error ? err.message : String(err));
+      console.error('[helldesk-autonomy]', err instanceof Error ? (err.stack ?? err.message) : String(err));
     }
   }, 4000);
 
@@ -364,6 +464,8 @@ export async function serve(opts?: {
   const server = Bun.serve({
     hostname: bind,
     port,
+    // Long mutation/review dispatches keep requests open; do not cut them at 10s.
+    idleTimeout: 60,
     async fetch(req) {
       const url = new URL(req.url);
       if (url.pathname === '/v1/ws') {
@@ -690,13 +792,18 @@ if (isMain) {
       console.error('[helldesk] FAIL_CLOSED: production daemon cannot run runner=fake (synthetic inference). Set daemon.production=false for test daemons, or policy.runner=kilo/openai.');
       process.exit(42);
     }
-    if (dcfg.policy.runner === 'kilo' && !dcfg.policy.kiloServerBin) {
-      console.error('[helldesk] FAIL_CLOSED: runner=kilo requires policy.kiloServerBin (headless Kilo server binary path).');
-      process.exit(42);
-    }
   }
 
-  const rt = await serve({ configPath });
+  // startDaemon resolves the Kilo CLI (explicit → KILO_BIN → PATH → newest
+  // installed extension) and validates the effective model. Fail closed with a
+  // single precise message instead of an unhandled stack.
+  let rt: Awaited<ReturnType<typeof serve>>;
+  try {
+    rt = await serve({ configPath });
+  } catch (error) {
+    console.error(`[helldesk] FAIL_CLOSED: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(42);
+  }
   rt.ready = true;
   if (process.env.HELLDESK_DETACHED_WORKERS === '1' || args.includes('--daemon')) {
     // Advertise readiness for the parent launcher / scheduled task.

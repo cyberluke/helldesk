@@ -152,8 +152,8 @@ describe('DepartmentDO', () => {
       const all = await department.listAgents();
       expect(all).toHaveLength(3);
 
-      const polecats = await department.listAgents({ role: 'soul' });
-      expect(polecats).toHaveLength(2);
+      const souls = await department.listAgents({ role: 'soul' });
+      expect(souls).toHaveLength(2);
 
       const refineries = await department.listAgents({ role: 'qualityAssurance' });
       expect(refineries).toHaveLength(1);

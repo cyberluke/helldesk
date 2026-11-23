@@ -15,7 +15,9 @@ const CreateDepartmentBody = z.object({
 const CreateWorkstationBody = z.object({
   department_id: z.string().min(1),
   name: z.string().min(1).max(64),
-  git_url: z.string().url(),
+  // Optional locally: Task Studio routes each task to a workspace path, so a
+  // workstation can be created as a crew seat before any repo is wired.
+  git_url: z.string().url().or(z.literal('')).optional().default(''),
   default_branch: z.string().min(1).default('main'),
   kilocode_token: z.string().min(1).optional(),
   platform_integration_id: z.string().min(1).optional(),

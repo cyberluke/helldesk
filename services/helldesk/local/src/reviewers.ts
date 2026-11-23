@@ -1,11 +1,12 @@
 import { z } from 'zod';
 import type { Db } from './db';
 import { generateId } from './ids';
-import { ReviewResultSchema, FindingSchema } from './schemas';
+import { ReviewVerdictSchema } from './review-contract';
 import { makeEvidenceCtx, verifyPathInSnapshot, verifyLineRange } from './context-reader';
 import type { InferenceRunner, ReviewPrompt } from './inference';
 import { buildReviewUserPrompt } from './inference';
 import { readFileSync } from 'node:fs';
+import { extractJsonObject } from './json-extract';
 
 /**
  * Independent adversarial reviewers A/B + independent adjudicator.
@@ -13,18 +14,12 @@ import { readFileSync } from 'node:fs';
  * frozen snapshot, rejects fabricated VERIFIED findings, and bounds retries.
  */
 
-const ReviewerParseSchema = z.object({
-  result: ReviewResultSchema,
-  coverage: z.object({
-    changedFiles: z.number().int().min(0),
-    inspectedFiles: z.number().int().min(0),
-    uncoveredPaths: z.array(z.string()).default([]),
-  }),
-  findings: z.array(FindingSchema).default([]),
-  models: z.array(z.unknown()).default([]),
-});
+// The verdict contract lives in ONE place (review-contract.ts) and is shared by
+// every runner: Kilo structured output, OpenAI response_format and Codex
+// --output-schema all target the same generated JSON Schema.
+const ReviewerParseSchema = ReviewVerdictSchema;
 /** Exported for negative tests that feed reviewer output through the schema. */
-export type ReviewerParse = z.infer<typeof ReviewerParseSchema>;
+export type ReviewerParse = z.infer<typeof ReviewVerdictSchema>;
 export { ReviewerParseSchema };
 
 /* Remove review_* tool-usage instructions from a reviewer system prompt so the
@@ -59,36 +54,13 @@ export function stripModelToolUsage(system: string): string {
     .trim();
 }
 
-export function extractJsonObject(text: string): unknown {
-  // Strip surrounding prose: find the first '{' ... matching '}'
-  const start = text.indexOf('{');
-  if (start === -1) throw new Error('No JSON object found in reviewer output');
-  let depth = 0;
-  let inStr = false;
-  let esc = false;
-  for (let i = start; i < text.length; i++) {
-    const c = text[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (c === '\\') esc = true;
-      else if (c === '"') inStr = false;
-      continue;
-    }
-    if (c === '"') inStr = true;
-    else if (c === '{') depth++;
-    else if (c === '}') {
-      depth--;
-      if (depth === 0) {
-        const slice = text.slice(start, i + 1);
-        return JSON.parse(slice);
-      }
-    }
-  }
-  throw new Error('Unbalanced JSON object in reviewer output');
-}
+export { extractJsonObject } from './json-extract';
 
 export interface StageOutput {
   result: z.infer<typeof ReviewerParseSchema> & { reviewerIds: string[] };
+  /** Real token usage reported by the detached worker (budget telemetry). */
+  tokensIn?: number;
+  tokensOut?: number;
 }
 
 /**
@@ -176,7 +148,7 @@ export function finalizeStageText(opts: {
   snapshotId: string;
   workspacePath: string;
   targetId: string;
-  role: 'reviewer-a' | 'reviewer-b' | 'adjudicator';
+  role: 'reviewer-a' | 'reviewer-b' | 'adjudicator' | 'governor';
   reviewerIds: string[];
   requirements?: string;
   text: string;
@@ -242,7 +214,7 @@ export async function runReviewerStage(opts: {
   snapshotId: string;
   store: string;
   workspacePath: string;
-  role: 'reviewer-a' | 'reviewer-b' | 'adjudicator';
+  role: 'reviewer-a' | 'reviewer-b' | 'adjudicator' | 'governor';
   reviewerIds: string[];
   system: string;
   runner: InferenceRunner;
@@ -250,6 +222,8 @@ export async function runReviewerStage(opts: {
   modelID: string;
   /** Override the default user prompt (e.g. adjudicator receives A+B combined). */
   userPromptOverride?: string;
+  /** Tier-derived character budget for the review user prompt. */
+  promptCharBudget?: number;
 }): Promise<StageOutput> {
   const ctx = makeEvidenceCtx(opts.store, opts.snapshotId, opts.workspacePath);
   if (!ctx) throw new Error(`Cannot load snapshot manifest for ${opts.snapshotId}`);
@@ -265,6 +239,7 @@ export async function runReviewerStage(opts: {
     diff: diffText,
     changedFiles: ctx.manifest.changedFiles,
     reviewMode: 'frozen-evidence',
+    promptCharBudget: opts.promptCharBudget,
   });
 
   const prompt: ReviewPrompt = {

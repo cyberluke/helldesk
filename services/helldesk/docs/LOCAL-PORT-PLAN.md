@@ -13,19 +13,20 @@ Build only the missing runtime delta.
 - **Build only the delta:** a local Cloudflare-Worker **runtime adapter** (SqlStorage→
   bun:sqlite, `DurableObject`/alarm shim, env bindings) + a Bun HTTP entry that mounts
   the existing Hono worker + DOs. NAI ExcellenceGovernor stays the dashboard. NAI Lattice is
-  federated via the existing `@cyberluke/nai-lattice-client` dependency.
+  federated via the published NAI-Lattice client dependency.
 - **Revalidate:** the `local/` orchestrator currently duplicates a slice of this. It is
   kept as the introspection/QA/mission runner, then overlaid (review-queue/scheduling
   are already department-DO concepts in Cloudflare) rather than duplicated further.
 
 ## Verified facts (this session)
 - `:8787` = NAI ExcellenceGovernor dashboard (Cloudflare shift backend) — ALIVE, one-stop token baked in.
-- This repo's `local` engine (`config.json` port 4790, runner=litellm-edge/differential_sseproxy) is DOWN.
+- This repo's `local` engine (configured port, runner=kilo with the effective `kilo.jsonc` model) is DOWN.
 - `services/helldesk/src` = the full Cloudflare HELLDESK (Hono worker + 6 DOs + handlers + prompts + billing).
 - Domain code depends on `cloudflare:workers` `DurableObject`, `SqlStorage.exec`, env bindings,
   `@sentry/cloudflare`, `@kilocode/worker-utils`, `drizzle` table interpolators, `hono`, `@trpc/server`.
 - `query.util.ts` = thin `sql.exec(query, ...params)` wrapper → the whole adapter surface is `SqlStorage`.
-- `local/package.json` already depends on `@cyberluke/nai-lattice-client` (file:../vendor/@cyberluke/nai-lattice-client).
+- `local/package.json` depends on the published NAI-Lattice client (`^0.2.0`); the vendored copy under
+  `services/helldesk/vendor/` remains an optional offline fallback.
 
 ## Milestone 1 (this build) — Local HELLDESK via federated handlers + local runtime
 Bring the REAL HELLDESK up locally on a native Bun server, no Cloudflare, no `wrangler`,
@@ -39,7 +40,7 @@ verbatim and build a thin local worker + local Department proxy (implementing ju
 handlers/stub surface actually call, delegating to the SAME submodules over a local SqlStorage).
 
 1. **`local-live/` Bun package** (self-contained; deps: hono, @trpc/server, drizzle-orm, jose,
-   zod, @cyberluke/nai-lattice-client). No monorepo workspace install — Bun resolves these directly.
+   zod, the published NAI-Lattice client). No monorepo workspace install — Bun resolves these directly from npm.
 2. **Vendored local shims** under `local-live/vendor/`:
    - `@sentry/cloudflare` → `withSentry(cfg, handlers) => handlers`, `captureException` no-op.
    - `@kilocode/worker-utils` subpaths actually imported (kilo-token, auth-middleware,
@@ -85,4 +86,5 @@ submodule tests where they are substrate-free, plus a local smoke.
 - Auth (`@kilocode/worker-utils/kilo-auth`, JWT, CF Access): local dev auth enabled via a
   dev token (the same `a9793aad…`-style in-page token), cloud checks strangled.
 - Billing / cloud-only containers: local fallback or explicitly marked NOT_RUN.
-- `@cyberluke/nai-lattice-client` (NAF client) is a `file:` dep — confirm it builds standalone locally.
+- The published NAI-Lattice client (NAF) is consumed from npm at `^0.2.0`; verify the registry tarball on a
+  clean install. The vendored 0.2.0 copy remains an offline fallback.

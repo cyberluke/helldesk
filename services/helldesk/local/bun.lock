@@ -5,7 +5,7 @@
     "": {
       "name": "@cyberluke/local-helldesk",
       "dependencies": {
-        "@cyberluke/nai-lattice-client": "file:../vendor/@cyberluke/nai-lattice-client",
+        "@cyberluke/nai-lattice-client": "^0.2.0",
         "@kilocode/plugin": "7.4.22",
         "@kilocode/sdk": "7.4.22",
         "zod": "4.6.7",
@@ -20,7 +20,7 @@
   "packages": {
     "@ai-sdk/provider": ["@ai-sdk/provider@3.0.8", "", { "dependencies": { "json-schema": "^0.4.0" } }, "sha512-oGMAgGoQdBXbZqNG0Ze56CHjDZ1IDYOwGYxYjO5KLSlz5HiNQ9udIXsPZ61VWaHGZ5XW/jyjmr6t2xz2jGVwbQ=="],
 
-    "@cyberluke/nai-lattice-client": ["@cyberluke/nai-lattice-client@file:../vendor/@cyberluke/nai-lattice-client", { "dependencies": { "@noble/hashes": "1.8.0" }, "devDependencies": { "@types/node": "^20", "typescript": "^5" } }],
+    "@cyberluke/nai-lattice-client": ["@cyberluke/nai-lattice-client@0.2.0", "", { "dependencies": { "@noble/hashes": "1.8.0" } }, "sha512-3uMDaWUkkZCXYYIVVNkjF2ouspTYAX2kMWf/+9gbh/Ot26AtxrQg/M4j6nHQh5lJT71CXY/GsOgc90LlbogDAg=="],
 
     "@kilocode/plugin": ["@kilocode/plugin@7.4.22", "", { "dependencies": { "@ai-sdk/provider": "3.0.8", "@kilocode/sdk": "7.4.22", "effect": "4.0.0-beta.83", "zod": "4.1.8" }, "peerDependencies": { "@opentui/core": ">=0.4.5", "@opentui/keymap": ">=0.4.5", "@opentui/solid": ">=0.4.5" }, "optionalPeers": ["@opentui/core", "@opentui/keymap", "@opentui/solid"] }, "sha512-BYRtgvNsUNPvIW5XvqSaIwSd77cAyeUOjdHOHAqogNG4cSjgkpsGvSJ6E/+DPlJOkQ+5ofimh2DFuOsrB6RAKQ=="],
 
@@ -96,10 +96,6 @@
 
     "zod": ["zod@4.6.7", "", {}, "sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg=="],
 
-    "@cyberluke/nai-lattice-client/@types/node": ["@types/node@20.19.43", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-6oYBAi5ikg4Pl+kGsoYtawUMBT2zZMCvPNF7pVLnHZfd1zf38DRiWn/gT01RYCdUqkv7Fhr+C9ot4/tb+2sVvA=="],
-
     "@kilocode/plugin/zod": ["zod@4.1.8", "", {}, "sha512-5R1P+WwQqmmMIEACyzSvo4JXHY5WiAFHRMg+zBZKgKS+Q1viRa0C1hmUKtHltoIFKtIdki3pRxkmpP74jnNYHQ=="],
-
-    "@cyberluke/nai-lattice-client/@types/node/undici-types": ["undici-types@6.21.0", "", {}, "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ=="],
   }
 }

@@ -51,12 +51,12 @@ const TICKET_STATUS_DOT: Record<string, string> = {
 export function AgentPanel({
   agentId,
   workstationId,
-  departmentId: _departmentIdProp,
+  departmentId = 'default',
   push,
   close,
 }: {
   agentId: string;
-  workstationId: string;
+  workstationId?: string;
   departmentId?: string;
   push: (ref: ResourceRef) => void;
   close: () => void;
@@ -64,14 +64,34 @@ export function AgentPanel({
   const trpc = useTRPC();
   const { openAgentTab } = useTerminalBar();
 
-  const agentsQuery = useQuery(trpc.helldesk.listAgents.queryOptions({ workstationId }));
+  // Crew agents have no workstation: never fetch /workstations//agents|tickets.
+  // Fall back to the DEPARTMENT crew endpoint so the drawer still resolves them.
+  const scoped = Boolean(workstationId);
+  const agentsQuery = useQuery({
+    ...trpc.helldesk.listAgents.queryOptions({ departmentId, workstationId: workstationId ?? '' }),
+    enabled: scoped,
+  });
+  const crewQuery = useQuery({
+    ...trpc.helldesk.listDepartmentAgents.queryOptions({ departmentId }),
+    enabled: !scoped,
+  });
   const ticketsQuery = useQuery({
-    ...trpc.helldesk.listTickets.queryOptions({ workstationId }),
+    ...trpc.helldesk.listTickets.queryOptions({ departmentId, workstationId: workstationId ?? '' }),
+    enabled: scoped,
     refetchInterval: 8_000,
   });
 
-  const agent = (agentsQuery.data ?? []).find(a => a.id === agentId);
-  const relatedTickets = (ticketsQuery.data ?? []).filter(b => b.assignee_agent_ticket_id === agentId);
+  const agentList = (scoped ? agentsQuery.data : crewQuery.data) ?? [];
+  // Mission projections address the stable engine role (`role:soul`). When the
+  // department roster prefers the named local soul, resolve that role to the
+  // real agent instead of dead-ending on "Loading agent…".
+  const roleFallback = agentId.startsWith('role:')
+    ? agentList.find(a => (a.role ?? '').toLowerCase() === agentId.slice(5).toLowerCase())
+    : undefined;
+  const agent = agentList.find(a => a.id === agentId) ?? roleFallback;
+  const relatedTickets = (ticketsQuery.data ?? []).filter(
+    b => b.assignee_agent_ticket_id === agentId || b.assignee_agent_ticket_id === agent?.id,
+  );
 
   if (!agent) {
     return <div className="p-6 text-center text-sm text-white/30">Loading agent…</div>;
@@ -241,3 +261,5 @@ function MetaCell({
     </div>
   );
 }
+
+

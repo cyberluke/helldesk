@@ -31,10 +31,26 @@ const MIGRATIONS: Array<{ version: number; file: string }> = [
   { version: 7, file: '0007_mission_engine_matrix.sql' },
   { version: 8, file: '0008_job_transcript.sql' },
   { version: 9, file: '0009_verify_mode.sql' },
+  { version: 10, file: '0010_mission_replan_streak.sql' },
+  { version: 11, file: '0011_mission_ticket_assignee.sql' },
+  { version: 12, file: '0012_mission_chat.sql' },
+  { version: 13, file: '0013_mission_chat_speaker.sql' },
+  { version: 14, file: '0014_mission_operator_status.sql' },
+  { version: 15, file: '0015_blocked_retry.sql' },
+  { version: 16, file: '0016_observability_indexes.sql' },
+  { version: 17, file: '0017_mission_review_controls.sql' },
+  { version: 18, file: '0018_human_acceptance.sql' },
+  { version: 19, file: '0019_awaiting_acceptance_state.sql' },
+  { version: 20, file: '0020_task_sizing.sql' },
 ];
 
+/** Latest schema version shipped by this package (used by the doctor). */
+export const LATEST_MIGRATION_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;
+export const MIGRATION_COUNT = MIGRATIONS.length;
+
 export function openDb(dbPath: string, opts?: { readonly?: boolean }): Db {
-  mkdirSync(dirname(dbPath), { recursive: true });
+  // `:memory:` has no parent directory (dirname => '.', which EEXISTs on Windows).
+  if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
   // Bun's SQLite Database treats an explicit `readonly:false` as invalid on
   // some versions; only pass the option when it is actually `true`.
   const db = opts?.readonly ? new Database(dbPath, { readonly: true }) : new Database(dbPath);
@@ -55,15 +71,34 @@ export function openDb(dbPath: string, opts?: { readonly?: boolean }): Db {
   db.exec('PRAGMA foreign_keys = ON;');
 
   const runMigration = (): void => {
-    const current = (db.query('PRAGMA user_version').get() as { user_version: number })
+    let current = (db.query('PRAGMA user_version').get() as { user_version: number })
       ?.user_version ?? 0;
     for (const m of MIGRATIONS) {
       if (current < m.version) {
         const sql = readFileSync(fileURLToPath(new URL(`./migrations/${m.file}`, import.meta.url)), 'utf8');
-        db.transaction(() => {
-          db.exec(sql);
+        // Table-swap migrations (e.g. widening a CHECK constraint, which SQLite
+        // can only do by DROP + ALTER RENAME) cannot run inside a single
+        // transaction: within one transaction SQLite reports "already another
+        // table or index with this name" and aborts the swap. Such migrations
+        // opt out with a leading `-- @@automit` header line and run in
+        // autocommit (statement-by-statement). The DAEMON MUST be the only
+        // writer during startup, so autocommit is safe here. user_version is
+        // still set to the target only after the whole file executes, so a
+        // failure mid-file leaves it pointing at the old schema version.
+        const autocommit = /^\s*--\s*@@automit\b/.test(sql);
+        if (autocommit) {
+          const noComments = sql.split('\n').filter((l) => !/^\s*--/.test(l)).join('\n');
+          const stmts = noComments.split(';').map((s) => s.trim()).filter((s) => s.length > 0);
+          for (const s of stmts) db.exec(s);
           db.exec(`PRAGMA user_version = ${m.version};`);
-        })();
+        } else {
+          db.transaction(() => {
+            db.exec(sql);
+            db.exec(`PRAGMA user_version = ${m.version};`);
+          })();
+        }
+        current = (db.query('PRAGMA user_version').get() as { user_version: number })
+          ?.user_version ?? 0;
       }
     }
   };

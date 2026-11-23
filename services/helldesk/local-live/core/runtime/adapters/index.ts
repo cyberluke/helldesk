@@ -10,7 +10,7 @@
  */
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, isAbsolute } from 'node:path';
 
 export type DispatchAdapterName = 'local-git' | 'none';
 
@@ -66,16 +66,54 @@ function git(args: string[], cwd: string): Promise<{ code: number; stdout: strin
 }
 
 /**
+ * Ensure a project workspace directory is a usable git repository.
+ *
+ * The project workspace is the primary INPUT repo — and, when no output repo is
+ * configured, the OUTPUT too (input = output). A user may point at a plain
+ * directory (or a path that does not exist yet) that was never `git init`'d;
+ * the old adapter cloned it and failed. Initialise in place instead:
+ *   - create the directory when missing,
+ *   - `git init` when it is not a repo,
+ *   - put an unborn repo on the configured branch and seed an empty HEAD commit,
+ *   - leave an existing repo (and its branch) otherwise untouched.
+ * Idempotent — safe to call on save, before dispatch, and on every commit.
+ */
+export async function ensureWorkspaceRepo(repoPath: string, branch?: string): Promise<string> {
+  const ws = resolve(repoPath);
+  if (!isAbsolute(repoPath)) throw Error('Workspace path must be an absolute directory: ' + repoPath);
+  if (!existsSync(ws)) mkdirSync(ws, { recursive: true });
+  if (!existsSync(join(ws, '.git'))) {
+    const init = await git(['init', '--quiet'], ws);
+    if (init.code !== 0) throw Error('Workspace repository initialization failed: ' + init.stderr);
+    // An unborn repo has no commits yet; point HEAD at the configured branch.
+    // symbolic-ref works before the first commit (checkout -B would need a start point).
+    if (branch) await git(['symbolic-ref', 'HEAD', `refs/heads/${branch}`], ws);
+  }
+  const head = await git(['rev-parse', '--verify', 'HEAD'], ws);
+  if (head.code !== 0) {
+    const seed = await git(
+      ['-c', 'user.name=HELLDESK', '-c', 'user.email=helldesk@localhost', 'commit', '--allow-empty', '-m', 'Initialize workspace'],
+      ws,
+    );
+    if (seed.code !== 0) throw Error('Could not initialize workspace HEAD');
+  }
+  return ws;
+}
+
+/**
  * Local-git adapter: operates on a local filesystem repo checkout.
- * - `prepare`: ensure the workdir exists; if `repoPath` is a git repo, clone or
- *   open a working copy (or make a local bare mirror + clone if `bareRemote`).
- *   Also mounts any `source_repos` into `<workdir>/sources/<id>` (read-only
- *   INPUT reads) and, when an `outputRepo` is configured, prepares
- *   `<workdir>/output` (init a NEW repo if missing, or clone an EXISTING one)
- *   so a completed delta can be federated cross-repo.
- * - `commit`: stage, commit, and optionally push to `bareRemote`, then — when
- *   an outputRepo is set — copy the changed files into the output checkout and
- *   commit them there too (AAF federation of the delta between two repos).
+ * - `prepare`:
+ *   - NO output repo → SINGLE-REPOSITORY mode: the project workspace is both the
+ *     input and the output. It is created/`git init`'d when needed and the agent
+ *     works in place, so the commit lands in the user's directory. Extra
+ *     `source_repos` are mounted read-only under `<workdir>/sources/<id>`.
+ *   - WITH an output repo → the input is cloned into `<workdir>/repo` (read
+ *     source) and `<workdir>/output` is prepared as the writable destination
+ *     (init a NEW repo if missing, or clone an EXISTING one).
+ * - `commit`: stage, commit, and optionally push to `bareRemote`. In
+ *   single-repository mode the commit lands directly in the project workspace;
+ *   with an output repo the changed files are federated into the output checkout
+ *   and committed there too.
  */
 export const localGitAdapter: DispatchAdapter = {
   name: 'local-git',
@@ -87,6 +125,17 @@ export const localGitAdapter: DispatchAdapter = {
       if(sources.some(source=>resolve(source).toLowerCase()===destination))throw Error('Output repository must be distinct from every read-source repository');
     }
     mkdirSync(cfg.workdir, { recursive: true });
+
+    // SINGLE-REPOSITORY MODE (no output repo): input = output. The workspace is
+    // the working repo — auto-initialise it and operate in place. This is the
+    // "point at a directory" flow: a missing path or a plain directory is
+    // created / `git init`'d, never rejected, and no clone shadows it.
+    if (!cfg.outputRepo) {
+      await ensureWorkspaceRepo(cfg.repoPath, cfg.branch);
+      await mountSources(cfg, join(cfg.workdir, 'sources'));
+      return;
+    }
+
     const target = join(cfg.workdir, 'repo');
     const source = resolve(cfg.repoPath);
     if (existsSync(join(target, '.git'))) {
@@ -116,13 +165,14 @@ export const localGitAdapter: DispatchAdapter = {
   },
 
   async commit(cfg, message) {
-    const target = cfg.outputRepo ? resolve(cfg.outputRepo.repoPath) : join(cfg.workdir, 'repo');
+    // Single-repo: commit in the project workspace itself (input = output).
+    const target = cfg.outputRepo ? resolve(cfg.outputRepo.repoPath) : resolve(cfg.repoPath);
     await this.prepare(cfg);
     await git(['add', '--all'], target);
     const staged = await git(['diff', '--cached', '--quiet'], target);
     let head = '';
     if (staged.code === 1) {
-      const committed = await git(['commit', '--quiet', '-m', message], target);
+      const committed = await git(['-c', 'user.name=HELLDESK', '-c', 'user.email=helldesk@localhost', 'commit', '--quiet', '-m', message], target);
       if (committed.code !== 0) return { ok: false, error: `commit failed: ${committed.stderr}` };
     }
     head = (await git(['rev-parse', '--short', 'HEAD'], target)).stdout.trim();

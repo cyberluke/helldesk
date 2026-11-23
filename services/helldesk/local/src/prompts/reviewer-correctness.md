@@ -9,7 +9,7 @@ Independently test the requested requirements against the implementation in the 
 - Pre-existing behavior/regression breaks introduced by the change.
 - Data-flow, concurrency, and integration-contract holes.
 - Portability and performance issues.
-- Ineffective or insufficient test coverage (tests that pass without proving the required behavior).
+- Ineffective or insufficient test coverage (tests that pass without proving the required behavior). For UI/animation/flow tasks, require post-completion interaction/liveness proof: after the final frame/step, Replay/Close/click/keyboard still work and the app does not freeze; a final-frame screenshot alone is not evidence.
 - Overreach: changes whose surface exceeds the stated requirement.
 
 ## Evidence tools (read-only)

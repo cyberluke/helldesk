@@ -1,11 +1,15 @@
 /**
  * adapters.source-repos.test.ts — verifies the two-repo transform delta:
  * `localGitAdapter.prepare()` mounts configured SOURCE repos into
- * `<workdir>/sources/<id>` alongside the writable `<workdir>/repo`, so a task
- * like "read the game app, build a game-agnostic framework" has a structural
- * home and the source is actually present on disk for agents to read.
+ * `<workdir>/sources/<id>` alongside the project workspace, so a task like
+ * "read the game app, build a game-agnostic framework" has a structural home
+ * and the source is actually present on disk for agents to read.
+ *
+ * Single-repository mode (no output repo) works IN PLACE: the project workspace
+ * is the writable repo (input = output), not a `<workdir>/repo` clone.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -55,9 +59,10 @@ describe('localGitAdapter prepare() — two-repo source mounting', () => {
     expect(existsSync(join(root, 'work', 'sources', 'game', 'game.js'))).toBeTrue();
   });
 
-  it('clones the destination into workdir/repo (the writable side)', () => {
-    expect(existsSync(join(root, 'work', 'repo', '.git'))).toBeTrue();
-    expect(existsSync(join(root, 'work', 'repo', 'readme.md'))).toBeTrue();
+  it('uses the destination workspace in place — no shadow workdir/repo clone', () => {
+    expect(existsSync(join(root, 'work', 'repo'))).toBeFalse();
+    expect(existsSync(join(root, 'framework', '.git'))).toBeTrue();
+    expect(existsSync(join(root, 'framework', 'readme.md'))).toBeTrue();
   });
 
   it('re-prepare is idempotent (does not error when already mounted)', async () => {
@@ -101,9 +106,10 @@ describe('localGitAdapter commit() — output repo federation (AAF cross-repo de
       allowCommit: true,
     });
 
-    // mutate the workspace and commit -> should federate into the output repo.
-    const wsrc = join(root, 'w', 'repo');
-    writeFileSync(join(wsrc, 'module.js'), '// workspace module CHANGED\n');
+    // Extraction missions write the configured OUTPUT directly (the adapter
+    // intentionally never copies a source tree over a reviewed destination).
+    // Mutate the output repo itself, then commit that delta.
+    writeFileSync(join(outputRepo, 'module.js'), '// extracted module CHANGED\n');
     const res = await localGitAdapter.commit({
       workdir: join(root, 'w'),
       repoPath: ws,
@@ -112,10 +118,9 @@ describe('localGitAdapter commit() — output repo federation (AAF cross-repo de
       allowCommit: true,
     }, 'feat: change module');
     expect(res.ok).toBeTrue();
-    // The output checkout should now contain the federated file.
-    const outFile = join(root, 'w', 'output', 'module.js');
-    srcContent = existsSync(outFile) ? readFileSync(outFile, 'utf8') : '';
-    void srcContent;
+    srcContent = existsSync(join(outputRepo, 'module.js')) ? readFileSync(join(outputRepo, 'module.js'), 'utf8') : '';
+    const log = execFileSync('git', ['log', '-1', '--format=%s'], { cwd: outputRepo, encoding: 'utf8' }).trim();
+    expect(log).toBe('feat: change module');
   }, 30_000);
 
   afterAll(() => { try { rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ } });
@@ -125,7 +130,7 @@ describe('localGitAdapter commit() — output repo federation (AAF cross-repo de
     expect(existsSync(join(root, 'w', 'output', 'index.js'))).toBeTrue();
   });
 
-  it('federates a workspace delta into the output repo (cross-repo)', () => {
+  it('commits the configured output repo delta (extraction writes directly)', () => {
     expect(srcContent).toContain('CHANGED');
     expect(srcContent).toContain('module');
   });

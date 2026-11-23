@@ -255,7 +255,7 @@ export type EffectiveConfig = {
     frontDesk: string | undefined;
   };
   git_push_flags: string | undefined;
-  max_concurrent_polecats: number | undefined;
+  max_concurrent_souls: number | undefined;
   max_dispatch_attempts: number | undefined;
 };
 
@@ -301,8 +301,8 @@ export function resolveWorkstationConfig(
       frontDesk: departmentConfig.custom_instructions?.frontDesk,
     },
     git_push_flags: workstationOverride?.git_push_flags,
-    max_concurrent_polecats:
-      workstationOverride?.max_concurrent_polecats ?? departmentConfig.max_polecats_per_workstation,
+    max_concurrent_souls:
+      workstationOverride?.max_concurrent_souls ?? departmentConfig.max_souls_per_workstation,
     max_dispatch_attempts: workstationOverride?.max_dispatch_attempts,
   };
 }

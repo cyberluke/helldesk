@@ -18,7 +18,17 @@ export function writeReport(opts: {
 
   const sorted = [...report.findings].sort((a, b) => sevRank(a.severity) - sevRank(b.severity));
   const md = buildMarkdown(report, sorted, opts);
-  const json = JSON.stringify({ ...report, findings: sorted }, null, 2);
+  const json = JSON.stringify(
+    {
+      ...report,
+      ...(opts.costMeta
+        ? { cost: { tokensIn: opts.costMeta.tokensIn ?? null, tokensOut: opts.costMeta.tokensOut ?? null, cost: opts.costMeta.cost ?? null } }
+        : {}),
+      findings: sorted,
+    },
+    null,
+    2
+  );
   writeFileSync(jsonPath, json);
   writeFileSync(mdPath, md);
   // Content hash for reproducibility
@@ -60,6 +70,13 @@ function buildMarkdown(report: ReviewReport, sorted: Finding[], opts: {
     for (const p of report.coverage.uncoveredPaths) lines.push(`- \`${p}\``);
   }
   lines.push('');
+  if (report.policy) {
+    lines.push('## Review policy');
+    lines.push('');
+    lines.push(`- **${report.policy.summary}**`);
+    lines.push(`- Reviewer A: ${report.policy.reviewerA ? 'enabled' : 'disabled'} · Reviewer B: ${report.policy.reviewerB ? 'enabled' : 'disabled'} · ExcellenceGovernor: ${report.policy.governor ? 'enabled' : 'disabled'}`);
+    lines.push('');
+  }
   lines.push('## Models');
   lines.push('');
   for (const m of opts.providerMap) {

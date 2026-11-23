@@ -290,6 +290,9 @@ export async function listTickets(
   workstationId: string,
   filter?: { status?: string }
 ): Promise<Ticket[]> {
+  // Crew/global views legitimately have no workstation: skip the request
+  // instead of calling /workstations//tickets (404).
+  if (!workstationId) return [];
   const params = new URLSearchParams();
   if (filter?.status) params.set('status', filter.status);
   const qs = params.toString();
@@ -313,6 +316,7 @@ export async function registerAgent(
 }
 
 export async function listAgents(departmentId: string, workstationId: string): Promise<Agent[]> {
+  if (!workstationId) return [];
   const body = await helldeskFetch(`/api/departments/${departmentId}/workstations/${workstationId}/agents`);
   return parseSuccessData(body, AgentSchema.array());
 }
@@ -427,7 +431,7 @@ export const DepartmentConfigSchema = z.object({
   kilocode_token: z.string().optional(),
   owner_user_id: z.string().optional(),
   default_model: z.string().optional(),
-  max_polecats_per_workstation: z.number().optional(),
+  max_souls_per_workstation: z.number().optional(),
   qualityAssurance: z
     .object({
       gates: z.array(z.string()),
@@ -568,3 +572,4 @@ export async function ensureFrontDesk(departmentId: string): Promise<FrontDeskSe
 export async function destroyFrontDesk(departmentId: string): Promise<void> {
   await helldeskFetch(`/api/departments/${departmentId}/frontDesk/destroy`, { method: 'POST' });
 }
+

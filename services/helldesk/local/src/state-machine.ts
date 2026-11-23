@@ -25,7 +25,10 @@ export const TRANSITIONS: Record<JobState, JobState[]> = {
   DISCOVERED: ['SNAPSHOTTED', 'QUEUED', 'FAILED_TERMINAL', 'CANCELLED'],
   SNAPSHOTTED: ['QUEUED', 'FAILED_TERMINAL', 'CANCELLED'],
   QUEUED: ['REVIEWING_A_B', 'CANCELLED', 'INCONCLUSIVE', 'FAILED_TERMINAL'],
-  REVIEWING_A_B: ['ADJUDICATING', 'INCONCLUSIVE', 'FAILED_TERMINAL', 'CANCELLED', 'QUEUED'],
+  // Reviewer verdicts are FINAL when the ExcellenceGovernor stage is disabled by
+  // operator policy, so the reviewing state must be able to terminalize directly
+  // instead of pretending an adjudication happened.
+  REVIEWING_A_B: ['ADJUDICATING', 'COMPLETED_PASS', 'COMPLETED_FINDINGS', 'INCONCLUSIVE', 'FAILED_TERMINAL', 'CANCELLED', 'QUEUED'],
   ADJUDICATING: ['COMPLETED_PASS', 'COMPLETED_FINDINGS', 'INCONCLUSIVE', 'FAILED_TERMINAL', 'CANCELLED', 'QUEUED'],
   COMPLETED_PASS: [],
   COMPLETED_FINDINGS: [],

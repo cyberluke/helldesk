@@ -1,4 +1,4 @@
-# CyberLuke Local HELLDESK — install persistent Windows daemon (proper back-end).
+# HELLDESK Local — install persistent Windows daemon (proper back-end).
 # Registers a user-level Windows Scheduled Task that starts the control plane
 # at logon and keeps it running INDEPENDENTLY of any VS Code window lifecycle
 # and WITHOUT ever allocating a console window. The task launches the daemon
@@ -6,7 +6,7 @@
 # cmd/console window appear. All output is redirected to daemon.log.
 #
 # This runs in the user's interactive session (so it can reach the user-scoped
-# LiteLLM gateway and kilo binary) but is completely headless: SW_HIDE window
+# Kilo gateway/config and CLI) but is completely headless: SW_HIDE window
 # style 0 throughout the launch chain, nothing flashes at logon or on restart.
 #
 # Run: powershell -ExecutionPolicy Bypass -File scripts\install-daemon.ps1
@@ -14,7 +14,7 @@ $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = Split-Path -Parent $here
 
-$taskName = "CyberLukeLocalGasDepartment"
+$taskName = "HellDeskControlPlane"
 $cfg = Join-Path $root "config.json"
 if (-not (Test-Path $cfg)) {
     Copy-Item (Join-Path $root "config.example.json") $cfg
@@ -42,7 +42,7 @@ if ($existing) {
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
     Write-Host "[install] Replaced existing task $taskName." -ForegroundColor Yellow
 }
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description "CyberLuke Local HELLDESK persistent control plane (headless service, no console window)" | Out-Null
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description "HELLDESK Local persistent control plane (headless service, no console window)" | Out-Null
 Write-Host "[install] Registered headless scheduled service '$taskName' (logon start, auto-restart, zero-window)." -ForegroundColor Green
 
 # Start it now so the daemon is available immediately.

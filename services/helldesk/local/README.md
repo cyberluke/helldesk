@@ -1,8 +1,7 @@
-# CyberLuke Local HELLDESK
+# HELLDESK Local
 
-Native Windows adversarial review engine, the HELLDESK local tier of
-`cyberluke/helldesk` (all Cloudflare / Kilo Cloud / Kilo Gateway dependencies
-removed). A local orchestrator persists
+Native Windows adversarial review engine, the HELLDESK local tier
+(all Cloudflare / Kilo Cloud / Kilo Gateway dependencies removed). A local orchestrator persists
 durable review jobs in SQLite (WAL), builds immutable hashed Git / filesystem
 snapshots, runs two independent adversarial reviewers plus a separate
 adjudicator, and persists Markdown + JSON reports accessible from a localhost
@@ -55,7 +54,7 @@ services/helldesk/local/
 .\scripts\smoke.ps1         # fixture review to a completed report
 ```
 
-State lives in `%LOCALAPPDATA%\CyberLuke\LocalGasDepartment\` (db, snapshots,
+State lives in `%LOCALAPPDATA%\HELLDESK\LocalDepartment\` (db, snapshots,
 reports, logs, per-user token). The daemon binds `127.0.0.1` only and requires
 the local token for mutations.
 
@@ -73,11 +72,77 @@ See `config.example.json`. Key fields:
   sessions (overrides inheritance; never the developer session).
 - `workspaces[]` — local roots to watch. Git optional.
 
+### Context tiers (32K → 1M)
+
+HELLDESK runs on any local context class without hardcoded 128K assumptions.
+The ladder is `32k, 64k, 96k, 128k, 256k, 384k, 512k, 1m` in
+`src/context-tiers.ts`.
+
+```json
+"context": {
+  "tier": "auto",
+  "contextWindow": 524288,
+  "charsPerToken": 4,
+  "promptUtilization": 0.9,
+  "reservedOutputTokens": 65536
+}
+```
+
+Resolution precedence per model route:
+
+1. explicit `context.contextWindow` (tokens),
+2. explicit `context.tier`,
+3. detected `provider.<id>.models.<model>.limit.context` from
+   `~/.config/kilo/kilo.json(c)` (the operator's own model declaration),
+4. 128K default.
+
+The resolved window drives the reviewer/worker prompt and diff char budgets,
+the `limit` projected into the headless Kilo provider for reviewers **and** the
+writable mutation agent, and the codex prompt cap. Everything is live-tunable
+via `PATCH /v1/config` (`context` section), the plugin tool
+`gt_local_config`, or the local-live **Engine config** UI.
+
+`KILO_CONFIG_TRANSPORT_LIMIT_CHARS` (28,000) is a separate Windows
+`KILO_CONFIG_CONTENT` environment-variable budget — it is **not** the model
+context window and does not change with the tier.
+
+## Model and Kilo CLI — no LiteLLM, no pinned extension version
+
+HELLDESK uses the operator's effective Kilo model. `runner=kilo` and
+`autonomy.mutationRunner=kilo` read `model` from the merged Kilo config
+(`~/.config/kilo/kilo.json`, then `kilo.jsonc`), for example
+the DeepSeek V4.1 Flash route you select in Kilo. No provider or model is pinned
+in the engine defaults, and no local LiteLLM proxy is required or assumed.
+
+The Kilo CLI is resolved in this order:
+
+1. `policy.kiloServerBin` / `autonomy.kiloBin` when the configured file exists,
+2. `KILO_BIN` (or `KILO_BINARY`),
+3. `kilo` on `PATH`,
+4. the newest installed `kilocode.kilo-code-*` extension under the common
+   VS Code / Cursor extension roots.
+
+A missing binary or model is a fail-closed startup error with a precise message.
+There is no silent provider substitution.
+
+## Mission lifetime — budgets are opt-in, never hidden
+
+HELLDESK is a long-horizon platform: a mission may legitimately run for days
+across many review/replan cycles. `advanceMission` enforces
+`autonomy.maxMissionWallClockMs`, `autonomy.maxMissionRevisions` and
+`autonomy.maxMissionReviewTokens` **only when the operator explicitly sets
+them**. An omitted limit means unbounded — there is no wall-clock, revision or
+review-token default that may park productive work.
+
+Pathological loops are still bounded by `MAX_CONSECUTIVE_NO_DELTA_REPLANS` (24)
+and `MAX_PLAN_REVISIONS` (3000); those are correctness guards, not spend clocks.
+A budget park is `BLOCKED_EXTERNAL` and requires an operator resume.
+
 ## Kilo plugin — registration (supported discovery)
 
 Kilo auto-discovers every `.ts` file in the user `plugin/` directory
 (`~/.config/kilo/plugin/`). Register Local HELLDESK alongside the existing
-`cyberluke-clean-system-prompt` without disturbing it:
+the existing prompt-cleanup plugin without disturbing it:
 
 ```
 .\scripts\install-plugin.ps1            # writes ~/.config/kilo/plugin/local-helldesk.ts
@@ -86,7 +151,7 @@ Kilo auto-discovers every `.ts` file in the user `plugin/` directory
 
 The installer writes a shim that re-exports the repo factory, never touches
 `clean-system-prompt.ts`, and is reversible. Both plugins load with distinct
-ids (`cyberluke-clean-system-prompt`, `cyberluke-local-helldesk`); the Local
+ids (the prompt-cleanup plugin and `helldesk-local`); the Local
 HELLDESK plugin registers only `tool` + `event` hooks (plus `dispose`) and no
 `chat.system.transform` / `chat.params`, so it cannot strip the `Hakakatoni
 Ultra` persona or the prompt-cleanup plugin, and never touches the developer's
@@ -109,8 +174,8 @@ evidence tools and a restricted tool allowlist (no edit/bash/web).
 Loading the plugin inside a **running** Kilo process is the final step and
 cannot be automated from a build sandbox. When you next open VS Code:
 
-1. Confirm Kilo reports both plugins loaded (ids `cyberluke-clean-system-prompt`
-   and `cyberluke-local-helldesk`).
+1. Confirm Kilo reports both plugins loaded (the prompt-cleanup plugin
+   and `helldesk-local`).
 2. Confirm `Hakakatoni Ultra` still routes to the same model/provider and the
    clean-system-prompt behavior is unchanged (persona intact).
 3. Confirm the reviewer model used is resolved correctly — the plugin does NOT
@@ -139,7 +204,10 @@ GET  /health                          liveness/readiness/queue depth
 GET  /v1/jobs                         list jobs
 GET  /v1/jobs/:id                     job detail
 GET  /v1/reports/:id                  persisted report JSON
-GET  /v1/events                       event feed (WS at /v1/ws)
+GET  /v1/events                       event feed — ?after=N cursor mode (SSE resume)
+                                      — ?tail=N newest N events (observability), chronological
+GET  /v1/observability                read-only snapshot: 24h event volume/types/workstations,
+                                      queue, missions, reviews, gates, workers, usage, recovery
 POST /v1/workspaces/register          register a local root
 POST /v1/reviews                      enqueue a review (HEAD/commit/range/dirty/folder)
 POST /v1/reviews/:id/retry            requeue an INCONCLUSIVE/failed job
@@ -150,7 +218,7 @@ Mutations require `Authorization: Bearer <token>`.
 
 ## Report
 
-`%LOCALAPPDATA%\CyberLuke\LocalGasDepartment\reports\<job-id>.json` and `.md`.
+`%LOCALAPPDATA%\HELLDESK\LocalDepartment\reports\<job-id>.json` and `.md`.
 
 ## Troubleshooting
 

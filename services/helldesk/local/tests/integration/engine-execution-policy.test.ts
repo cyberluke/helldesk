@@ -43,7 +43,7 @@ describe('GATE 15 — centralized review-execution policy (production-like confi
       snapshotStore: h.snapshotStore,
       reportDir: h.reportDir,
       runner: createFakeRunner(),
-      resolvedModels: new Map([['inherited', { providerID: 'litellm-edge', modelID: 'differential_sseproxy' }]]),
+      resolvedModels: new Map([['inherited', { providerID: 'openai-compatible', modelID: 'demo-model' }]]),
     });
     engine.onStartup();
   });

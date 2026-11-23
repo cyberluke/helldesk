@@ -12,7 +12,7 @@
  * missing one, so dispatch can proceed and the output repo gets a HEAD.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, mkdirSync, existsSync, rmSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -45,6 +45,65 @@ function makeGitRepo(root: string, path: string): void {
 function gitHead(path: string): string {
   return execFileSync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: path }).toString().trim();
 }
+
+describe('localGitAdapter single-repository mode (input = output)', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'gt-adapter-single-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const cfgFor = (repoPath: string): DispatchAdapterConfig => ({
+    workdir: join(root, 'work'),
+    repoPath,
+    sourceRepos: [],
+    branch: 'main',
+    allowCommit: true,
+  });
+
+  it('creates + git-inits a missing workspace, and the commit lands in it', async () => {
+    const ws = join(root, 'workspace');
+    const cfg = cfgFor(ws);
+
+    await localGitAdapter.prepare(cfg);
+
+    expect(existsSync(join(ws, '.git'))).toBe(true);
+    expect(gitHead(ws).length).toBeGreaterThan(0);
+    // No shadow clone: the workspace itself is the working repo.
+    expect(existsSync(join(cfg.workdir, 'repo'))).toBe(false);
+
+    writeFileSync(join(ws, 'result.txt'), 'done\n');
+    const res = await localGitAdapter.commit(cfg, 'Implement task');
+
+    expect(res.ok).toBe(true);
+    expect(execFileSync('git', ['status', '--porcelain'], { cwd: ws }).toString().trim()).toBe('');
+  });
+
+  it('initialises an existing plain directory in place (keeps its files)', async () => {
+    const ws = join(root, 'plain');
+    mkdirSync(ws, { recursive: true });
+    writeFileSync(join(ws, 'existing.txt'), 'keep\n');
+
+    await localGitAdapter.prepare(cfgFor(ws));
+
+    expect(existsSync(join(ws, '.git'))).toBe(true);
+    expect(existsSync(join(ws, 'existing.txt'))).toBe(true);
+  });
+
+  it('leaves an existing repository and its HEAD untouched', async () => {
+    const ws = join(root, 'existing-repo');
+    makeGitRepo(root, ws);
+    const before = gitHead(ws);
+
+    await localGitAdapter.prepare(cfgFor(ws));
+
+    expect(gitHead(ws)).toBe(before);
+  });
+});
 
 describe('localGitAdapter.prepare output-repo initialisation (existing-but-uninitialised dir)', () => {
   let root: string;

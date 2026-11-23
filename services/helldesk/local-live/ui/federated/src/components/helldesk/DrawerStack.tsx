@@ -8,8 +8,10 @@ import type { DepartmentEvent } from './ActivityFeed';
 // ── Resource types ───────────────────────────────────────────────────────
 
 export type ResourceRef =
-  | { type: 'ticket'; ticketId: string; workstationId: string }
-  | { type: 'agent'; agentId: string; workstationId: string; departmentId?: string }
+  // workstationId is OPTIONAL: department-crew agents (e.g. Toast) have no
+  // workstation, so their drawer panels must not fetch /workstations//… (404).
+  | { type: 'ticket'; ticketId: string; workstationId?: string; departmentId?: string }
+  | { type: 'agent'; agentId: string; workstationId?: string; departmentId?: string }
   | { type: 'event'; event: DepartmentEvent };
 
 type DrawerStackEntry = {

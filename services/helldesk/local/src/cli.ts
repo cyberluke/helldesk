@@ -25,7 +25,7 @@ import { mkdirSync } from 'node:fs';
 
 function usage(): void {
   console.log(`
-cyberluke-local-helldesk CLI
+HELLDESK Local CLI
 
   head    [--path P]                review committed HEAD
   commit  [--path P] [--ref R]      review an arbitrary commit

@@ -776,7 +776,7 @@ export function applyAction(ctx: ApplyActionContext, action: Action): (() => Pro
 
       if (!agentId) {
         // Need to get-or-create an agent for this ticket.
-        // Infer role from ticket type: MR tickets need refineries, issue tickets need polecats.
+        // Infer role from ticket type: MR tickets need refineries, issue tickets need souls.
         const targetTicket = ticketOps.getTicket(sql, ticketId);
         const role = targetTicket?.type === 'merge_request' ? 'qualityAssurance' : 'soul';
         try {

@@ -112,3 +112,110 @@ export function loadMergedGlobalConfig(extraDirs: string[] = []): MergedGlobalCo
   if (!result.config) throw new Error('Kilo global configuration is invalid; correct it and reload');
   return result.config;
 }
+
+export interface KiloProviderOptions {
+  baseURL: string;
+  apiKey?: string;
+}
+
+/** Model context limits as declared by Kilo (`provider.<id>.models.<model>.limit`). */
+export interface KiloModelLimits {
+  context?: number;
+  input?: number;
+  output?: number;
+}
+
+function positiveInt(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.trunc(v) : undefined;
+}
+
+/**
+ * Read `provider.<providerID>.models.<modelID>.limit` from an already-merged
+ * Kilo configuration.
+ *
+ * Model keys are matched exactly first (case-insensitive as a fallback) and
+ * then by the model entry's own `id` field, because the operator's active
+ * route may name a profile model (`...-ctx-512k`) whose entry carries
+ * `id: <base model>`. Returns null when the provider/model/limit is absent —
+ * callers must then fall back to an explicit tier or the default, never guess.
+ */
+export function kiloModelLimitsFromConfig(
+  config: unknown,
+  providerID: string,
+  modelID: string
+): KiloModelLimits | null {
+  if (!providerID || !modelID) return null;
+  const providerTable = (config as { provider?: unknown } | null | undefined)?.provider;
+  if (!providerTable || typeof providerTable !== 'object' || Array.isArray(providerTable)) return null;
+  const provider = (providerTable as Record<string, unknown>)[providerID];
+  if (!provider || typeof provider !== 'object' || Array.isArray(provider)) return null;
+  const models = (provider as { models?: unknown }).models;
+  if (!models || typeof models !== 'object' || Array.isArray(models)) return null;
+  const table = models as Record<string, unknown>;
+  let entry = table[modelID];
+  if (entry === undefined) {
+    const ciKey = Object.keys(table).find((k) => k.toLowerCase() === modelID.toLowerCase());
+    if (ciKey) entry = table[ciKey];
+  }
+  if (entry === undefined) {
+    const byId = Object.keys(table).find((k) => {
+      const candidate = table[k];
+      return !!candidate && typeof candidate === 'object' && (candidate as { id?: unknown }).id === modelID;
+    });
+    if (byId) entry = table[byId];
+  }
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  const limit = (entry as { limit?: unknown }).limit;
+  if (!limit || typeof limit !== 'object' || Array.isArray(limit)) return null;
+  const raw = limit as Record<string, unknown>;
+  const context = positiveInt(raw.context);
+  const input = positiveInt(raw.input);
+  const output = positiveInt(raw.output);
+  if (context === undefined && input === undefined && output === undefined) return null;
+  return { ...(context !== undefined ? { context } : {}), ...(input !== undefined ? { input } : {}), ...(output !== undefined ? { output } : {}) };
+}
+
+/** Resolve a model's declared limits from the effective kilo.json/kilo.jsonc. */
+export function resolveKiloModelLimits(providerID: string, modelID: string): KiloModelLimits | null {
+  try {
+    return kiloModelLimitsFromConfig(loadMergedGlobalConfig(), providerID, modelID);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve an OpenAI-compatible provider's endpoint options from the merged
+ * effective Kilo configuration (`provider.<id>.options`).
+ *
+ * HELLDESK follows the operator's live provider configuration instead of
+ * hardcoding an endpoint, so switching the default provider/model in Kilo
+ * (`~/.config/kilo/kilo.jsonc`) refreshes the review + mutation routes without
+ * editing `config.json`. `policy.providers` keeps precedence when it defines
+ * the provider explicitly.
+ *
+ * Returns null when the provider is absent or has no baseURL. A returned
+ * `apiKey` is a credential: never log or serialize this object.
+ */
+export function resolveKiloProviderOptions(providerID: string): KiloProviderOptions | null {
+  if (!providerID) return null;
+  try {
+    const merged = loadMergedGlobalConfig();
+    const providers = z.record(z.string(), z.unknown()).safeParse(merged.provider);
+    if (!providers.success) return null;
+    const entry = z
+      .object({
+        options: z
+          .object({ baseURL: z.string().min(1).optional(), apiKey: z.string().min(1).optional() })
+          .passthrough(),
+      })
+      .passthrough()
+      .safeParse(providers.data[providerID]);
+    if (!entry.success) return null;
+    const baseURL = entry.data.options.baseURL?.trim();
+    if (!baseURL) return null;
+    return { baseURL, ...(entry.data.options.apiKey ? { apiKey: entry.data.options.apiKey } : {}) };
+  } catch {
+    return null;
+  }
+}

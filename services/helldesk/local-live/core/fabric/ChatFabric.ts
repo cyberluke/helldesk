@@ -165,8 +165,8 @@ export class ChatFabric {
         // event.read_range is the shared-ledger READ for the break-room-mind (the
         // fabric is store-and-replay, not push; we poll the canonical ledger).
         requestedCapabilities: ['event.append', 'event.read_range'],
-        packageIdentity: '@cyberluke/nai-lattice-client@0.1.0',
-        buildSha: 'naf-client-ts-0.1.0',
+        packageIdentity: '@cyberluke/nai-lattice-client@0.2.0',
+        buildSha: 'naf-client-ts-0.2.0',
         // Omit pipePath to let NafClient auto-discover the canonical pipe.
         ...(this.opts.pipePath ? { pipePath: this.opts.pipePath } : {}),
         producerId: this.opts.producerId ?? `helldesk.dashboard-${process.pid}`,

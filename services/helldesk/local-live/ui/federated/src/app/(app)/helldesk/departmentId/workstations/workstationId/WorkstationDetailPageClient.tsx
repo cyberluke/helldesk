@@ -1,16 +1,13 @@
 'use client';
 
-import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTRPC } from '@/lib/trpc/utils';
 import { toast } from 'sonner';
-import { Button } from '@/components/Button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { TicketBoard } from '@/components/helldesk/TicketBoard';
 import { AgentCard } from '@/components/helldesk/AgentCard';
-import { SlingDialog } from '@/components/helldesk/SlingDialog';
 import { useDrawerStack } from '@/components/helldesk/DrawerStack';
-import { Plus, GitBranch, Hexagon, Bot } from '@/lib/icons';
+import { GitBranch, Hexagon, Bot } from '@/lib/icons';
 import { motion, AnimatePresence } from 'motion/react';
 
 type WorkstationDetailPageClientProps = {
@@ -20,7 +17,6 @@ type WorkstationDetailPageClientProps = {
 
 export function WorkstationDetailPageClient({ departmentId, workstationId }: WorkstationDetailPageClientProps) {
   const trpc = useTRPC();
-  const [isSlingOpen, setIsSlingOpen] = useState(false);
   const { open: openDrawer } = useDrawerStack();
 
   const queryClient = useQueryClient();
@@ -46,6 +42,15 @@ export function WorkstationDetailPageClient({ departmentId, workstationId }: Wor
       onSuccess: () => {
         void queryClient.invalidateQueries({ queryKey: trpc.helldesk.listTickets.queryKey() });
         toast.success('Ticket deleted');
+      },
+      onError: err => toast.error(err.message),
+    })
+  );
+
+  const moveTicket = useMutation(
+    trpc.helldesk.updateTicketStatus.mutationOptions({
+      onSuccess: () => {
+        void queryClient.invalidateQueries({ queryKey: trpc.helldesk.listTickets.queryKey() });
       },
       onError: err => toast.error(err.message),
     })
@@ -89,15 +94,6 @@ export function WorkstationDetailPageClient({ departmentId, workstationId }: Wor
             </>
           )}
         </div>
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={() => setIsSlingOpen(true)}
-          className="gap-1.5 bg-[color:oklch(95%_0.15_108_/_0.90)] text-black hover:bg-[color:oklch(95%_0.15_108_/_0.95)]"
-        >
-          <Plus className="size-3.5" />
-          Sling Work
-        </Button>
       </div>
 
       {/* Stats strip */}
@@ -127,7 +123,8 @@ export function WorkstationDetailPageClient({ departmentId, workstationId }: Wor
                   deleteTicket.mutate({ workstationId, ticketId });
                 }
               }}
-              onSelectTicket={ticket => openDrawer({ type: 'ticket', ticketId: ticket.ticket_id, workstationId })}
+              onSelectTicket={ticket => openDrawer({ type: 'ticket', ticketId: ticket.ticket_id, workstationId, departmentId })}
+              onMoveTicket={(ticket, status) => moveTicket.mutate({ departmentId, workstationId, ticketId: ticket.ticket_id, status })}
               agentNameById={agentNameById}
             />
           </div>
@@ -154,7 +151,7 @@ export function WorkstationDetailPageClient({ departmentId, workstationId }: Wor
 
             {agents.length === 0 && !agentsQuery.isLoading && (
               <div className="rounded-lg border border-dashed border-white/[0.08] p-4 text-center text-xs text-white/30">
-                No agents yet. Sling work to spawn a soul.
+                No agents yet. Agents appear here when Task Studio dispatches work.
               </div>
             )}
 
@@ -184,8 +181,6 @@ export function WorkstationDetailPageClient({ departmentId, workstationId }: Wor
           </div>
         </div>
       </div>
-
-      <SlingDialog workstationId={workstationId} isOpen={isSlingOpen} onClose={() => setIsSlingOpen(false)} />
     </div>
   );
 }

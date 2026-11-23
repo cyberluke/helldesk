@@ -9,7 +9,7 @@
  *
  * Transport split (P0 Phase 11: gpt-6-luna mutation + DeepSeek reviewer):
  *   - mutation:  real ChatGPT Codex CLI (codex exec -m gpt-6-luna) — writes files.
- *   - reviewer:  DeepSeek via LiteLLM (fast, reliable strict JSON now that tool
+ *   - reviewer:  DeepSeek via an OpenAI-compatible endpoint (fast, reliable strict JSON now that tool
  *                instructions are stripped from the reviewer prompt).
  *
  * Run for a month autonomously: valid FINDINGS are new input for the next
@@ -41,8 +41,8 @@ const MISSION_WS = resolve(process.env.GT_MISSION_WS ?? 'C:\\Users\\LUKES~1.COR\
 // on some proxies flip-flops PASS/INCONCLUSIVE and cannot converge).
 const REVIEW_RUNNER = process.env.GT_REVIEW_RUNNER ?? 'codex';
 const REVIEW_ENDPOINT = process.env.GT_REVIEW_BASE ?? 'http://127.0.0.1:4000/v1';
-const REVIEW_MODEL = process.env.GT_REVIEW_MODEL ?? (REVIEW_RUNNER === 'codex' ? 'gpt-6-luna' : 'differential_sseproxy');
-const REVIEW_PROVIDER = process.env.GT_REVIEW_PROVIDER ?? (REVIEW_RUNNER === 'codex' ? 'codex' : 'litellm-edge');
+const REVIEW_MODEL = process.env.GT_REVIEW_MODEL ?? (REVIEW_RUNNER === 'codex' ? 'gpt-6-luna' : 'demo-model');
+const REVIEW_PROVIDER = process.env.GT_REVIEW_PROVIDER ?? (REVIEW_RUNNER === 'codex' ? 'codex' : 'openai-compatible');
 const RUNNER = process.env.GT_MUTATION_RUNNER ?? 'codex';
 const MUT_MODEL = process.env.GT_MUTATION_MODEL ?? 'gpt-6-luna';
 const MUT_PROVIDER = 'codex';

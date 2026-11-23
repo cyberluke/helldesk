@@ -1,4 +1,4 @@
-# CyberLuke Local HELLDESK — smoke test
+# HELLDESK Local — smoke test
 # Registers a local temp fixture and demonstrates an actual completed review
 # report (fake deterministic runner by default). Prints report path + status.
 $ErrorActionPreference = "Stop"
@@ -48,7 +48,7 @@ if ($LASTEXITCODE -ne 0) { throw "smoke CLI failed" }
 Pop-Location
 
 # Verify the report exists and validates
-$stateDir = Join-Path $env:LOCALAPPDATA "CyberLuke\LocalGasDepartment"
+$stateDir = Join-Path $env:LOCALAPPDATA "HELLDESK\LocalDepartment"
 $reports = Get-ChildItem (Join-Path $stateDir "reports") -Filter "job_*.json" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
 if ($reports.Count -eq 0) {
     throw "[smoke] no report produced"

@@ -8,8 +8,8 @@
  *
  * This module is the SINGLE source of truth for where durable state lives.
  * Nothing Satin/HELLDESK writes may land in temp. The durable root defaults to
- * the stable, user-owned `%LOCALAPPDATA%\CyberLuke\HelldeskState` (matching the
- * existing `CyberLuke\LocalGasDepartment` convention for the local daemon), and is
+ * the stable, user-owned `%LOCALAPPDATA%\HELLDESK\HelldeskState` (matching the
+ * existing `HELLDESK\LocalDepartment` convention for the local daemon), and is
  * overridable via `HELLDESK_DURABLE_ROOT`. Per-agent homes are subdirectories,
  * never fresh temp dirs.
  */
@@ -20,9 +20,9 @@ import { homedir, tmpdir } from 'node:os';
 export function durableRoot(): string {
   const envRoot = process.env.HELLDESK_DURABLE_ROOT;
   if (envRoot && envRoot.trim().length > 0) return envRoot;
-  // Windows: LOCALAPPDATA\CyberLuke\HelldeskState ; non-Windows: ~/.kilo/helldesk
+  // Windows: LOCALAPPDATA\HELLDESK\HelldeskState ; non-Windows: ~/.kilo/helldesk
   if (process.platform === 'win32') {
-    return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'CyberLuke', 'HelldeskState');
+    return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'HELLDESK', 'HelldeskState');
   }
   return join(homedir(), '.kilo', 'helldesk');
 }

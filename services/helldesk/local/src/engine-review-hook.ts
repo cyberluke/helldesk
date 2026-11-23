@@ -5,10 +5,17 @@ import { resolveMutationRunner, type MutationRunner } from './mutation-runner';
 import { parseEngineMatrix } from './engine-matrix';
 import { loadMergedGlobalConfig } from './config-resolve';
 import { parseModelRef } from './model-resolver';
-import { REPORT_GATES, type ControllerDeps, type ReviewHook, type ReviewVerdict } from './mission-controller';
-import { getMission, getTicket, getQualityGates, listEvidence, getRepairPlan } from './mission-repository';
+import { REPORT_GATES, type ControllerDeps, type ReviewHook, type ReviewVerdict, captureEvidence } from './mission-controller';
+import { getMission, getTicket, getQualityGates, listEvidence, getRepairPlan, getRevision, updateRevision, getMissionReviewControls } from './mission-repository';
+import { validateReviewControls } from './review-controls';
+import { loadManifest } from './context-reader';
+import { extractJsonObject } from './reviewers';
+import { parseReviewVerdict } from './review-contract';
+import { digestRequirements, renderRequirementChecklist } from './requirement-digest';
+import { addMissionChatMessages } from './mission-chat-repository';
+import { renderReviewVerdictMarkdown, type ChatTranscriptBase, type ChatTranscriptItem } from './chat-transcript';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -33,31 +40,29 @@ export function makeEngineReviewHook(engine: Engine, gateKeys: string[] = REPORT
     // REPORT_GATES.ARTIFACTS ONLY when no task-specific gates were supplied;
     // a mission with taskGates is judged by ITS gates, never turbine diagnostics.
     const gates = gateKeys.length ? gateKeys : REPORT_GATES.ARTIFACTS;
-    // Real evidence artifacts content-hashed for THIS revision (the reviewers
-    // resolve against these — a gate is only admitted PASS with one).
-    const evidence = listEvidence(engine.d, revisionId);
-    const evidenceManifest = evidence.map((e) => ({
-      artifactId: e.artifact_id,
-      kind: e.kind,
-      path: e.path,
-      sha256: e.sha256,
-      bytes: e.bytes,
-    }));
     const mission = getMission(engine.d, missionId);
     const ticket = getTicket(engine.d, ticketId);
+    // Operator review policy for THIS task. A missing policy means all stages on.
+    const controls = getMissionReviewControls(engine.d, missionId);
+    const controlsError = validateReviewControls(controls);
+    if (controlsError) throw new Error(`invalid review policy for mission ${missionId}: ${controlsError}`);
     const priorGates = getQualityGates(engine.d, revisionId);
     const repairPlan = getRepairPlan(engine.d, revisionId);
-    // Build a REQUIREMENTS string carrying the actual task context.
-    const requirements = [
+    // Requirements WITHOUT the evidence manifest (evidence is captured from the
+    // immutable snapshot right AFTER createAndEnqueue, then the persisted meta is
+    // refreshed — the reviewer workers read it just before dispatch).
+    // TASK-AGNOSTIC REQUIREMENTS: distill the mission's own deliverables, constraints and
+    // definition-of-done from the objective and hand the checklist to the reviewer.
+    // Never hardcode a domain's acceptance criteria here.
+    const requirementChecklist = renderRequirementChecklist(digestRequirements(mission?.objective ?? ''));
+    const requirementsBase = [
       `MISSION: ${mission?.objective ?? ''}`,
       `ticket: ${ticket?.title ?? ''} — ${ticket?.objective ?? ''}`,
       `REVISION being reviewed: ${revisionId}`,
       `MANDATORY GATES (10/10 requires ALL PASS each with REPRO of a resolved evidence artifact, never an unsupported claim): ${gates.join(', ')}`,
       priorGates.length ? `PRIOR GATE STATE on this revision: ${priorGates.map((g) => `${g.gate_key}=${g.status}`).join(', ')}` : `PRIOR GATE STATE: none (first review of this revision)`,
       repairPlan ? `REPAIR PLAN: ${repairPlan.plan_json ?? '(none)'} (hypothesis=${repairPlan.hypothesis_key ?? ''}, failure_signature=${(repairPlan.failure_signature ?? '').slice(0, 80)})` : 'REPAIR PLAN: (n/a)',
-      `EVIDENCE MANIFEST (content-addressed; evaluate correctness against these, and only mark a gate PASS if you can cite an artifact that reproduces it):`,
-      ...evidenceManifest.map((e) => `  - ${e.kind} ${e.path ?? '(no path)'} sha256=${e.sha256 || '(missing/zero-byte)'} bytes=${e.bytes}`),
-      ``,
+      requirementChecklist,
       `Evaluate correctness + adversarial counterexamples of the FULL change this revision introduced (baseline to current working tree).`,
       `Adjudicate the B1 guarantees precisely. Do NOT PASS a gate whose evidence does not reproduce it.`,
     ].join('\n');
@@ -69,15 +74,74 @@ export function makeEngineReviewHook(engine: Engine, gateKeys: string[] = REPORT
     //    may already exist in a terminal state (e.g. INCONCLUSIVE from a previous
     //    attempt); reset it to QUEUED so the review can be re-run on the SAME
     //    immutable snapshot (bounded epistemic convergence).
-    const { jobId } = await engine.createAndEnqueue({
-      workspacePath,
-      subjectKind: 'git-dirty',
-      includeDirty: true,
-      includeUntracked: true,
-      requirements,
-      source: 'mission',
-    });
+    // An explicit operator re-review already created a QUEUED job on the SAME
+    // immutable snapshot and linked it to this revision. Use it instead of
+    // creating a second job with a different fingerprint.
+    const linked = (() => {
+      const revision = getRevision(engine.d, revisionId);
+      return revision?.review_job_id ? getJob(engine.d, revision.review_job_id) : null;
+    })();
+    let jobId: string;
+    if (linked && ['DISCOVERED', 'SNAPSHOTTED', 'QUEUED'].includes(linked.state)) {
+      jobId = linked.jobId;
+    } else {
+      ({ jobId } = await engine.createAndEnqueue({
+        workspacePath,
+        subjectKind: 'git-dirty',
+        includeDirty: true,
+        includeUntracked: true,
+        requirements: requirementsBase,
+        source: 'mission',
+        controls,
+      }));
+    }
     const existing = getJob(engine.d, jobId);
+
+    // ── EVIDENCE FROM THE IMMUTABLE SNAPSHOT (revision-bound) ───────────────
+    // A gate may only PASS with content-addressed evidence bound to THIS revision.
+    // Capturing only `result.changedFiles` from the mutator is not enough: an
+    // agent that COMMITS reports a clean working tree (zero files), and a later
+    // revision that legitimately produces no NEW delta would have zero evidence
+    // forever → the mission could never converge. The review snapshot already
+    // diffs base→head (+dirty), so bind evidence to exactly the files the
+    // reviewers see. Hash the LIVE workspace file: createAndEnqueue froze that
+    // exact state, so the bytes match the snapshot.
+    if (existing?.snapshotId) {
+      try {
+        const manifest = loadManifest(engine.snapshotStore, existing.snapshotId);
+        const have = new Set(listEvidence(engine.d, revisionId).map((e) => e.path ?? ''));
+        for (const f of manifest?.changedFiles ?? []) {
+          if (f && !have.has(f)) captureEvidence(engine.d, revisionId, 'source', f, workspacePath);
+        }
+      } catch { /* best effort: gates stay fail-closed if evidence cannot be bound */ }
+    }
+    const evidence = listEvidence(engine.d, revisionId);
+    const evidenceManifest = evidence.map((e) => ({
+      artifactId: e.artifact_id,
+      kind: e.kind,
+      path: e.path,
+      sha256: e.sha256,
+      bytes: e.bytes,
+    }));
+    // Refresh the persisted requirements with the manifest the reviewers must cite.
+    const requirements = [
+      requirementsBase,
+      `EVIDENCE MANIFEST (content-addressed; evaluate correctness against these, and only mark a gate PASS if you can cite an artifact that reproduces it):`,
+      ...evidenceManifest.map((e) => `  - ${e.kind} ${e.path ?? '(no path)'} sha256=${e.sha256 || '(missing/zero-byte)'} bytes=${e.bytes}`),
+    ].join('\n');
+    try {
+      // Refresh BOTH the requirements and the LIVE controls on the (possibly
+      // deduped) job, so a toggle made while the job was QUEUED applies to the
+      // review that is about to start. Merge in JS (no JSON1 dependency).
+      const row = engine.d.db
+        .query<{ meta: string | null }, [string]>(`SELECT meta FROM review_jobs WHERE job_id=?`)
+        .get(jobId);
+      let meta: Record<string, unknown> = {};
+      try { meta = row?.meta ? (JSON.parse(row.meta) as Record<string, unknown>) : {}; } catch { meta = {}; }
+      meta.requirements = requirements;
+      meta.controls = controls;
+      engine.d.db.query(`UPDATE review_jobs SET meta=? WHERE job_id=?`).run(JSON.stringify(meta), jobId);
+    } catch { /* meta refresh is best effort; row remains reviewable */ }
 
     // P0 fix (job-not-converging): a review job in a TERMINAL, DECIDED state is a
     // real verdict — never reset it and re-launch reviewers. Resetting COMPLETED_*
@@ -93,6 +157,14 @@ export function makeEngineReviewHook(engine: Engine, gateKeys: string[] = REPORT
         const verdict: ReviewVerdict =
           prev === 'COMPLETED_PASS' ? 'PASS' : (prev === 'INCONCLUSIVE' ? 'INCONCLUSIVE' : 'FINDINGS');
         const formattedFindings = jobFindings.map((f) => `[${f.severity}] ${f.title}`);
+        mirrorReviewToChat(engine, {
+          missionId,
+          ticketId,
+          revisionId,
+          jobId: jobId as string,
+          jobResult: prev,
+          finalVerdict: verdict,
+        });
         return {
           verdict,
           mandatoryGates: gates,
@@ -106,11 +178,16 @@ export function makeEngineReviewHook(engine: Engine, gateKeys: string[] = REPORT
       }
       if (prev !== 'QUEUED' && prev !== 'RUNNING' && prev !== 'REVIEWING_A_B' && prev !== 'ADJUDICATING') {
         engine.d.db.query(
-          `UPDATE review_jobs SET state='QUEUED', result=NULL, completed_at=NULL, retry_count=retry_count+1 WHERE job_id=?`
-        ).run(jobId);
+          `UPDATE review_jobs SET state='QUEUED', result=NULL, completed_at=NULL, retry_count=retry_count+1, updated_at=? WHERE job_id=?`
+        ).run(new Date().toISOString(), jobId);
         enqueueEvent(engine.d, 'job.requeued', { jobId, state: 'QUEUED' }, jobId);
       }
     }
+
+    // 1b. LINK THE JOB TO THE REVISION AT DISPATCH (not only at completion): the
+    //     console projects the ACTIVE revision's in-flight review from this link;
+    //     without it a running review is invisible (job empty, reviewers active).
+    updateRevision(engine.d, revisionId, { review_job_id: jobId });
 
     // 2. run the independent A/B + adjudicator pipeline (real reviewers) via the
     //    SAME centralized execution-selection the normal scheduler uses.
@@ -165,6 +242,14 @@ export function makeEngineReviewHook(engine: Engine, gateKeys: string[] = REPORT
     const evidenceResolvedPass = verdict === 'PASS' && !hasBlockingFinding && resolvableEvidence.length > 0;
     const evidenceResolved = (verdict === 'INCONCLUSIVE' || verdict === 'PASS') && resolvableEvidence.length > 0;
     const effectiveVerdict: ReviewVerdict = oraclePass ? 'PASS' : verdict;
+    mirrorReviewToChat(engine, {
+      missionId,
+      ticketId,
+      revisionId,
+      jobId: jobId as string,
+      jobResult: job?.state ?? null,
+      finalVerdict: effectiveVerdict,
+    });
     return {
       verdict: effectiveVerdict,
       mandatoryGates: gates,
@@ -226,6 +311,61 @@ interface AdjudicatedFinding {
   title: string;
 }
 
+/**
+ * Mirror the INDEPENDENT review into the operator chat.
+ *
+ * The rows are the reviewers' ACTUAL persisted verdicts (agent_runs raw output,
+ * parsed with the one shared contract), so the operator sees Reviewer A/B and
+ * the adjudicator in the same conversation as the soul. Idempotent by
+ * `review:<jobId>:<role>` part id; a mirror failure never affects the verdict.
+ */
+function mirrorReviewToChat(
+  engine: Engine,
+  args: { missionId: string; ticketId: string; revisionId: string; jobId: string; jobResult: string | null; finalVerdict: ReviewVerdict }
+): void {
+  try {
+    const runs = engine.d.db
+      .query<{ role: string; raw_output_path: string | null }, [string]>(
+        `SELECT role, raw_output_path FROM agent_runs WHERE job_id=? ORDER BY rowid`
+      )
+      .all(args.jobId);
+    const base = { missionId: args.missionId, ticketId: args.ticketId, revisionId: args.revisionId };
+    const batch: Parameters<typeof addMissionChatMessages>[1] = [];
+    for (const run of runs) {
+      if (!run.raw_output_path) continue;
+      let text = '';
+      try {
+        const blob = JSON.parse(readFileSync(run.raw_output_path, 'utf8')) as { text?: string };
+        text = blob.text ?? '';
+      } catch {
+        continue;
+      }
+      const parsed = parseReviewVerdict(extractJsonObject(text));
+      const body = parsed
+        ? renderReviewVerdictMarkdown(run.role, parsed)
+        : `Raw ${run.role} output could not be parsed as a verdict.`;
+      batch.push({
+        ...base,
+        partId: `review:${args.jobId}:${run.role}`,
+        role: 'assistant',
+        kind: 'text',
+        speaker: run.role,
+        text: body,
+      });
+    }
+    batch.push({
+      ...base,
+      partId: `review:${args.jobId}:summary`,
+      role: 'system',
+      kind: 'text',
+      text: `Independent review ${args.jobId}: ${args.jobResult ?? 'UNKNOWN'} (verdict ${args.finalVerdict}).`,
+    });
+    addMissionChatMessages(engine.d, batch);
+  } catch {
+    /* best effort: the chat mirror never changes the review verdict */
+  }
+}
+
 function listAdjudicatedFindings(engine: Engine, jobId: string): AdjudicatedFinding[] {
   try {
     const rows = engine.d.db
@@ -247,12 +387,15 @@ function listAdjudicatedFindings(engine: Engine, jobId: string): AdjudicatedFind
  */
 /**
  * Live default model route for the mutation worker — DERIVED from the user's
- * effective Kilo config (`~/.config/kilo/{kilo.json,kilo.jsonc}` `.model`, e.g.
- * `providerID/modelID`), NOT hardcoded. If the operator's default model changes,
- * the mutation agent follows automatically. Falls back to the current explicit
- * defaults only when the config cannot be read or has no model.
+ * effective Kilo config (`~/.config/kilo/{kilo.json,kilo.jsonc}` `.model`),
+ * NOT hardcoded. If the
+ * operator's default model changes, the mutation agent follows automatically.
+ *
+ * There is NO built-in provider fallback: a missing model is a configuration
+ * error, and the Kilo runner fails closed with a precise message. A local
+ * LiteLLM route is not assumed.
  */
-function resolveEffectiveModelRoute(explicit: { providerID?: string; modelID?: string }): { providerID: string; modelID: string } {
+export function resolveEffectiveModelRoute(explicit: { providerID?: string; modelID?: string }): { providerID: string; modelID: string } {
   if (explicit.providerID && explicit.modelID) return { providerID: explicit.providerID, modelID: explicit.modelID };
   try {
     const merged = loadMergedGlobalConfig();
@@ -261,13 +404,39 @@ function resolveEffectiveModelRoute(explicit: { providerID?: string; modelID?: s
       if (ref) return ref;
     }
   } catch {
-    /* ignore unreadable config; fall through to defaults */
+    /* unreadable config is handled by the startup fail-closed check */
   }
-  return { providerID: 'litellm-edge', modelID: 'differential_sseproxy' };
+  return { providerID: '', modelID: '' };
 }
 
-export function makeControllerDeps(engine: Engine, mutationCfg: { mutationRunner?: string; kiloBin?: string; providerID?: string; modelID?: string; baseURL?: string; apiKey?: string; taskGates?: string[]; timeoutMs?: number; verifyMode?: 'auto' | 'deferred' } = {}): ControllerDeps {
+export function makeControllerDeps(engine: Engine, mutationCfg: { mutationRunner?: string; kiloBin?: string; providerID?: string; modelID?: string; baseURL?: string; apiKey?: string; taskGates?: string[]; timeoutMs?: number; verifyMode?: 'auto' | 'deferred'; maxMissionWallClockMs?: number; maxMissionRevisions?: number; maxMissionReviewTokens?: number; mutationWatchdogMs?: number } = {}): ControllerDeps {
   const modelRoute = resolveEffectiveModelRoute({ providerID: mutationCfg.providerID, modelID: mutationCfg.modelID });
+  // Live chat capture: persist the REAL Kilo session parts (and the operator's
+  // steering rows) so the console can render a true conversation. Idempotent by
+  // part id; a bad row never blocks the mutation.
+  const captureChat = (items: ChatTranscriptItem[], base: ChatTranscriptBase): void => {
+    if (!items.length) return;
+    // ONE transaction per poll: per-row transactions blocked the daemon event
+    // loop long enough for the console's chat request to time out.
+    try {
+      addMissionChatMessages(
+        engine.d,
+        items.map((item) => ({
+          missionId: base.missionId,
+          ticketId: base.ticketId,
+          revisionId: base.revisionId,
+          sessionId: base.sessionId,
+          partId: item.partId,
+          role: item.role,
+          kind: item.kind,
+          text: item.text,
+          toolName: item.toolName,
+          toolInput: item.toolInput,
+          toolResult: item.toolResult,
+        }))
+      );
+    } catch { /* best effort */ }
+  };
   const defaultRunner = resolveMutationRunner({
     mutationRunner: mutationCfg.mutationRunner ?? 'kilo',
     codexBin: mutationCfg.kiloBin ?? '',
@@ -276,10 +445,25 @@ export function makeControllerDeps(engine: Engine, mutationCfg: { mutationRunner
     baseURL: mutationCfg.baseURL ?? '',
     apiKey: mutationCfg.apiKey ?? undefined,
     timeoutMs: mutationCfg.timeoutMs,
+    context: engine.config.context,
+    onChat: captureChat,
   });
   // Per-mission engine resolver: a mission's engine_matrix_json.mutation may pin
   // a different engine (e.g. codex) than the machine default. Builds a mutation
   // runner for that engine, falling back to the default when unset/unknown.
+  const routeFor = (missionId: string): { providerID: string; modelID: string } => {
+    try {
+      const row = engine.d.db.query<{ engine_matrix_json?: string }, [string]>(
+        `SELECT engine_matrix_json FROM autonomy_missions WHERE mission_id=?`).get(missionId);
+      if (!row?.engine_matrix_json) return modelRoute;
+      const matrix = parseEngineMatrix(JSON.parse(row.engine_matrix_json));
+      const mut = matrix.mutation;
+      if (!mut?.providerID && !mut?.modelID) return modelRoute;
+      return resolveEffectiveModelRoute({ providerID: mut.providerID, modelID: mut.modelID });
+    } catch {
+      return modelRoute;
+    }
+  };
   const runnerFor = (missionId: string): MutationRunner => {
     try {
       const row = engine.d.db.query<{ engine_matrix_json?: string }, [string]>(
@@ -288,7 +472,7 @@ export function makeControllerDeps(engine: Engine, mutationCfg: { mutationRunner
       const matrix = parseEngineMatrix(JSON.parse(row.engine_matrix_json));
       const mut = matrix.mutation;
       if (!mut?.engine) return defaultRunner;
-      const engMatRoute = resolveEffectiveModelRoute({ providerID: mut.providerID, modelID: mut.modelID });
+      const engMatRoute = routeFor(missionId);
       return resolveMutationRunner({
         mutationRunner: mut.engine,
         codexBin: mutationCfg.kiloBin ?? '',
@@ -297,6 +481,8 @@ export function makeControllerDeps(engine: Engine, mutationCfg: { mutationRunner
         baseURL: (mut.baseURL || mutationCfg.baseURL) ?? '',
         apiKey: (mut as { apiKey?: string }).apiKey ?? mutationCfg.apiKey ?? undefined,
         timeoutMs: (mut as { timeoutMs?: number }).timeoutMs ?? mutationCfg.timeoutMs,
+        context: engine.config.context,
+        onChat: captureChat,
       });
     } catch {
       return defaultRunner;
@@ -306,6 +492,8 @@ export function makeControllerDeps(engine: Engine, mutationCfg: { mutationRunner
     d: engine.d,
     runner: defaultRunner,
     runnerFor,
+    mutationRoute: modelRoute,
+    mutationRouteFor: routeFor,
     taskGates: mutationCfg.taskGates,
     mandatoryGates: mutationCfg.taskGates?.length ? undefined : REPORT_GATES.ARTIFACTS,
     workspacePathFor: (missionId) => {
@@ -320,5 +508,9 @@ export function makeControllerDeps(engine: Engine, mutationCfg: { mutationRunner
     // policy.verifyMode to 'deferred'. Re-read fresh each call so a live toggle
     // via /v1/config applies immediately across running missions.
     verifyMode: () => mutationCfg.verifyMode ?? 'auto',
+    maxMissionWallClockMs: mutationCfg.maxMissionWallClockMs,
+    maxMissionRevisions: mutationCfg.maxMissionRevisions,
+    maxMissionReviewTokens: mutationCfg.maxMissionReviewTokens,
+    mutationWatchdogMs: mutationCfg.mutationWatchdogMs,
   };
 }

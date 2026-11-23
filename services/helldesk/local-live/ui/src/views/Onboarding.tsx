@@ -44,7 +44,7 @@ export default function Onboarding() {
           <div>
             <h3>Pick the model profile</h3>
             <p className="muted">Real model via the canonical NAI-Lattice engine (gateway or Codex).</p>
-            <div className="chip ok" style={{ padding: '8px 14px' }}>differential_sseproxy@127.0.0.1:4000</div>
+            <div className="chip ok" style={{ padding: '8px 14px' }}>Kilo default model (kilo.jsonc)</div>
           </div>
         )}
         {step === 1 && (

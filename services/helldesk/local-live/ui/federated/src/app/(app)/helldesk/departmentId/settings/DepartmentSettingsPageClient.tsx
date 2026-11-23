@@ -95,7 +95,7 @@ export function DepartmentSettingsPageClient({ departmentId }: Props) {
   const [gitlabToken, setGitlabToken] = useState('');
   const [gitlabInstanceUrl, setGitlabInstanceUrl] = useState('');
   const [defaultModel, setDefaultModel] = useState('');
-  const [maxPolecats, setMaxPolecats] = useState<number | undefined>(undefined);
+  const [maxSouls, setMaxSouls] = useState<number | undefined>(undefined);
   const [qualityAssuranceGates, setQualityAssuranceGates] = useState<string[]>([]);
   const [autoMerge, setAutoMerge] = useState(true);
   const [initialized, setInitialized] = useState(false);
@@ -109,7 +109,7 @@ export function DepartmentSettingsPageClient({ departmentId }: Props) {
     setGitlabToken(cfg.git_auth?.gitlab_token ?? '');
     setGitlabInstanceUrl(cfg.git_auth?.gitlab_instance_url ?? '');
     setDefaultModel(cfg.default_model ?? '');
-    setMaxPolecats(cfg.max_polecats_per_workstation);
+    setMaxSouls(cfg.max_souls_per_workstation);
     setQualityAssuranceGates(cfg.qualityAssurance?.gates ?? []);
     setAutoMerge(cfg.qualityAssurance?.auto_merge ?? true);
     setInitialized(true);
@@ -135,7 +135,7 @@ export function DepartmentSettingsPageClient({ departmentId }: Props) {
           ...(gitlabInstanceUrl ? { gitlab_instance_url: gitlabInstanceUrl } : {}),
         },
         ...(defaultModel ? { default_model: defaultModel } : {}),
-        ...(maxPolecats ? { max_polecats_per_workstation: maxPolecats } : {}),
+        ...(maxSouls ? { max_souls_per_workstation: maxSouls } : {}),
         qualityAssurance: {
           gates: qualityAssuranceGates.filter(g => g.trim()),
           auto_merge: autoMerge,
@@ -337,16 +337,16 @@ export function DepartmentSettingsPageClient({ departmentId }: Props) {
                   </FieldGroup>
 
                   <FieldGroup
-                    label="Max Polecats per Workstation"
+                    label="Max Souls per Workstation"
                     hint="Upper bound on concurrent worker agents per workstation."
                   >
                     <Input
                       type="number"
                       min={1}
                       max={20}
-                      value={maxPolecats ?? ''}
+                      value={maxSouls ?? ''}
                       onChange={e =>
-                        setMaxPolecats(e.target.value ? parseInt(e.target.value, 10) : undefined)
+                        setMaxSouls(e.target.value ? parseInt(e.target.value, 10) : undefined)
                       }
                       placeholder="5"
                       className="w-28 border-white/[0.08] bg-white/[0.03] font-mono text-sm text-white/85 placeholder:text-white/20"

@@ -3,7 +3,7 @@
 > **Authority:** Canonical domain language, ownership boundaries, and behavioral invariants for HELLDESK.  
 > **Audience:** Coding agents, adversarial reviewers, maintainers, contributors, and operator-facing product surfaces.  
 > **Product posture:** Local AI-first. Cloudflare is an optional second execution home.  
-> **Lifecycle:** Greenfield. No Gas Town compatibility contract or historical data migration is required.
+> **Lifecycle:** Greenfield. No legacy compatibility contract or historical data migration is required.
 
 ## 1. Scope
 
@@ -57,13 +57,13 @@ The existing controller, reconciler, scheduler, event journal, verification syst
 
 ## 4. Canonical terminology
 
-| Canonical term | Meaning | Former Gas Town concept / avoid |
+| Canonical term | Meaning | Legacy concept / avoid |
 | --- | --- | --- |
 | **Department** | Logical top-level workspace/team instance | `Town`, `TownDO`, townie settlement metaphor |
 | **Employee** | Informal member of the synthetic workforce | `Townie` |
 | **Front Desk** | Dispatcher/chat entrypoint for the operator | `Mayor`; never synonym for HITL Operator |
 | **Workstation** | Registered execution host | `Rig` in orchestration domain; do not rename unrelated 3D rigs |
-| **Soul** | Worker/developer agent role | `Polecat` |
+| **Soul** | Worker/developer agent role | `Soul` |
 | **Quality Assurance** | Independent reviewer/refinement role | `Refinery` |
 | **Compliance Witness** | Evidence-witness role | `Witness` when this is the established agent role |
 | **Ticket** | Atomic durable work item | `Bead` |
@@ -91,7 +91,7 @@ The existing controller, reconciler, scheduler, event journal, verification syst
 
 - Use **HELLDESK** everywhere for product identity. The two runtime seats are not separate products.
 - Use `hd_`/`HD_` only where it matches the repository's actual naming convention. Do not rename platform-owned identifiers or unrelated external types.
-- Do not revive Gas Town's Town/Mayor/Rig/Polecat/Bead/Convoy vocabulary in active HELLDESK code or user-facing copy.
+- Do not revive legacy Town/Mayor/Rig/Soul/Bead/Convoy vocabulary in active HELLDESK code or user-facing copy.
 - Keep neutral mechanical vocabulary: `mission`, `revision`, `mutation`, `review`, `adjudication`, `lease`, `reconciler`, `evidence`, `quality_gate`, and `VERIFIED_10_10`.
 - A word shared with another domain is scoped: a character skeleton `rig` is not a HELLDESK `Workstation`; external email is not a `Memo`.
 - The satire may appear in names and microcopy, but the real operational meaning must remain discoverable through schemas, tool descriptions and documentation.
@@ -238,7 +238,7 @@ No perpetual new marketing slogans are required by this context. Product copy mu
 12. Preserve security and ownership boundaries even when running on `127.0.0.1`.
 13. Verify changed behavior at the local primary home and Cloudflare home wherever both are implemented and affected.
 14. Do not carry over unrelated Kilo Cloud billing, subscription, Security Agent or Kilo Pass domains into HELLDESK.
-15. Do not introduce old Gas Town aliases or migration scaffolding into this greenfield product.
+15. Do not introduce old aliases or migration scaffolding into this greenfield product.
 16. Preserve the corporate satire without allowing joke labels to obscure operations or safety-relevant errors.
 
 ## 13. Ambiguities and canonical decisions
@@ -272,7 +272,7 @@ Expected HELLDESK code responsibilities following the rename (confirm actual pat
 | Canonical product docs | Root `README.md`, `CONTEXT.md`, scoped `AGENTS.md` |
 | Product licensing | `LICENSE.md`, `COMMERCIAL.md` in the intended public release |
 
-Older published snapshots used `services/gastown/` and Gas Town names. **Those are historical observations, not the canonical HELLDESK contract.** Resolve the current source tree before editing, generating commands or asserting deployment status.
+Older published snapshots used a legacy service directory and legacy names. **Those are historical observations, not the canonical HELLDESK contract.** Resolve the current source tree before editing, generating commands or asserting deployment status.
 
 `README.md` explains the product to humans; this `CONTEXT.md` governs the domain; scoped `AGENTS.md` defines implementation discipline; executable schemas/tests remain the authority for what actually runs. If a document contradicts runtime evidence, report the discrepancy and reconcile it explicitly rather than inventing functionality.
 

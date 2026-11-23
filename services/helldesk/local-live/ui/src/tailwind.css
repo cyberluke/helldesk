@@ -6,6 +6,12 @@
  */
 @import "tailwindcss";
 
+/* The federated components live outside Vite's UI root; Tailwind v4 does not
+   scan them by default. Without these sources, arbitrary classes such as the
+   commit console's 3-column grid are silently dropped. */
+@source "../federated/src";
+@source "../federated/shim";
+
 /* The original UI targets a dark, non-blue HELLDESK palette. Provide the oklch
    aliases the components reference via arbitrary values (they are already inline
    as `bg-[color:oklch(...)]`), plus a couple of CSS variables shadcn uses. */

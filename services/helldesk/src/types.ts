@@ -256,8 +256,8 @@ export const DepartmentConfigSchema = z.object({
   /** Lightweight model for title generation, explore subagent, etc. */
   small_model: z.string().optional(),
 
-  /** Maximum concurrent polecats per workstation */
-  max_polecats_per_workstation: z.number().int().min(1).max(50).optional(),
+  /** Maximum concurrent souls per workstation */
+  max_souls_per_workstation: z.number().int().min(1).max(50).optional(),
 
   /**
    * department-level merge strategy. Workstations inherit this when they don't set their own.
@@ -383,7 +383,7 @@ export const WorkstationOverrideConfigSchema = z.object({
   git_push_flags: z.string().optional(),
 
   // Agent limits
-  max_concurrent_polecats: z.number().int().positive().optional(),
+  max_concurrent_souls: z.number().int().positive().optional(),
   max_dispatch_attempts: z.number().int().positive().optional(),
 });
 
@@ -420,7 +420,7 @@ export const DepartmentConfigUpdateSchema = z.object({
     })
     .optional(),
   small_model: z.string().optional(),
-  max_polecats_per_workstation: z.number().int().min(1).max(50).optional(),
+  max_souls_per_workstation: z.number().int().min(1).max(50).optional(),
   merge_strategy: MergeStrategy.optional(),
   qualityAssurance: z
     .object({

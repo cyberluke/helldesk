@@ -1,3 +1,4 @@
+-- @@automit
 -- 0009_verify_mode.sql
 -- WAR-mode deferred verification: widen the state CHECK constraints on
 -- mission_tickets.verification_state and ticket_revisions.state to include the
@@ -14,6 +15,9 @@
 PRAGMA foreign_keys = OFF;
 
 -- ── mission_tickets: widen verification_state CHECK to include PENDING_VERIFY ──
+-- Aborted/failed prior runs may leave the staging table behind; drop it first so
+-- a re-run performs a clean rebuild instead of colliding on an existing name.
+DROP TABLE IF EXISTS mission_tickets__verify_mode;
 CREATE TABLE mission_tickets__verify_mode (
   ticket_id            TEXT PRIMARY KEY,
   mission_id           TEXT NOT NULL REFERENCES autonomy_missions(mission_id),
@@ -38,6 +42,7 @@ CREATE INDEX IF NOT EXISTS idx_tickets_mission ON mission_tickets(mission_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_verif ON mission_tickets(verification_state);
 
 -- ── ticket_revisions: widen state CHECK to include PENDING_VERIFY ─────────────
+DROP TABLE IF EXISTS ticket_revisions__verify_mode;
 CREATE TABLE ticket_revisions__verify_mode (
   revision_id              TEXT PRIMARY KEY,
   ticket_id                TEXT NOT NULL REFERENCES mission_tickets(ticket_id),

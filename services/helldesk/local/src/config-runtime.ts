@@ -4,15 +4,17 @@ import {
   DaemonConfigSchema,
   ReviewPolicySchema,
   AutonomyConfigSchema,
+  ContextConfigSchema,
   WorkspaceConfigSchema,
   LocalProviderConfigSchema,
+  PricingConfigSchema,
   ReviewerModelSchema,
 } from './config';
 import { writeFileSync, mkdirSync, unlinkSync, renameSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 /**
- * CyberLuke Local HELLDESK — RUNTIME CONFIG STORE.
+ * HELLDESK Local — RUNTIME CONFIG STORE.
  *
  * The single source of truth for the daemon's *effective* configuration after
  * startup. The Engine, the scheduler pump, the TaskReconciler, the mission
@@ -45,7 +47,7 @@ const RESTART_ONLY_DAEMON_FIELDS = new Set([
 ]) as ReadonlySet<string>;
 
 export interface ConfigFieldMeta {
-  section: 'daemon' | 'policy' | 'autonomy' | 'workspaces';
+  section: 'daemon' | 'policy' | 'autonomy' | 'context' | 'workspaces';
   /** 'live' = applies immediately to running work; 'restart' = persisted, applies on next start. */
   applies: 'live' | 'restart';
 }
@@ -77,6 +79,9 @@ function policyMeta(): Record<string, string> {
     reviewerModelA: 'live',
     reviewerModelB: 'live',
     adjudicatorModel: 'live',
+    governorModel: 'live',
+    sizingModel: 'live',
+    pricing: 'live',
     strictCoverage: 'live',
     providers: 'live',
     kiloServerBin: 'live',
@@ -99,6 +104,9 @@ export class RuntimeConfigStore {
   readonly path: string;
 
   constructor(config: Config, configFilePath: string) {
+    // Legacy/programmatic configs may predate the context section; normalize it
+    // so live patches and every tier read site always see a complete object.
+    if (!config.context) config.context = ContextConfigSchema.parse({});
     this.config = config;
     this.path = configFilePath;
   }
@@ -117,6 +125,7 @@ export class RuntimeConfigStore {
         daemon: daemonMeta(),
         policy: policyMeta(),
         autonomy: autonomyMeta(),
+        context: contextMeta(),
         workspaces: ['path', 'enabled', 'include', 'exclude'],
       },
       path: this.path,
@@ -135,7 +144,7 @@ export class RuntimeConfigStore {
     const rejected: Array<{ field: string; issues: string[] }> = [];
 
     const patchSection = <T>(
-      sectionKey: 'daemon' | 'policy' | 'autonomy',
+      sectionKey: 'daemon' | 'policy' | 'autonomy' | 'context',
       schema: z.ZodType<T>,
       target: Record<string, unknown>,
       applicability: (field: string) => 'live' | 'restart'
@@ -150,6 +159,14 @@ export class RuntimeConfigStore {
       // independently and unknown keys surface as rejections instead of a tonal
       // whole-section parse failure.
       for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+        // Context optional overrides can be CLEARED explicitly: JSON has no
+        // `undefined`, and leaving a stale `contextWindow` behind would keep
+        // overriding a newly selected lower tier. `null` removes the key.
+        if (sectionKey === 'context' && value === null) {
+          delete (target as Record<string, unknown>)[key];
+          appliedLive.push(`${sectionKey}.${key}`);
+          continue;
+        }
         const probe = { ...target, [key]: value } as unknown;
         const parsed = schema.safeParse(probe);
         if (!parsed.success) {
@@ -194,7 +211,13 @@ export class RuntimeConfigStore {
             appliedLive.push('policy.providers');
           }
         }
-        for (const modelKey of ['reviewerModel', 'reviewerModelA', 'reviewerModelB', 'adjudicatorModel'] as const) {
+        for (const modelKey of ['reviewerModel', 'reviewerModelA', 'reviewerModelB', 'adjudicatorModel', 'governorModel', 'sizingModel'] as const) {
+          if (p[modelKey] === null) {
+            // Explicit clear: fall back to reviewerModel / inherited for this role.
+            delete (this.config.policy as Record<string, unknown>)[modelKey];
+            appliedLive.push(`policy.${modelKey}`);
+            continue;
+          }
           if (p[modelKey] !== undefined) {
             const parsed = ReviewerModelSchema.safeParse(p[modelKey]);
             if (!parsed.success) {
@@ -206,6 +229,18 @@ export class RuntimeConfigStore {
               this.config.policy[modelKey] = parsed.data;
               appliedLive.push(`policy.${modelKey}`);
             }
+          }
+        }
+        if (p.pricing !== undefined) {
+          const pricingParsed = PricingConfigSchema.safeParse(p.pricing);
+          if (!pricingParsed.success) {
+            rejected.push({
+              field: 'policy.pricing',
+              issues: pricingParsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`),
+            });
+          } else {
+            this.config.policy.pricing = pricingParsed.data;
+            appliedLive.push('policy.pricing');
           }
         }
         for (const scalar of ['runner', 'strictCoverage', 'kiloServerBin', 'productionCancelFake', 'verifyMode'] as const) {
@@ -228,6 +263,9 @@ export class RuntimeConfigStore {
 
     // ── autonomy ──
     patchSection('autonomy', AutonomyConfigSchema, this.config.autonomy as unknown as Record<string, unknown>, () => 'live');
+
+    // ── context (all live: resolved per job / per worker start) ──
+    patchSection('context', ContextConfigSchema, this.config.context as unknown as Record<string, unknown>, () => 'live');
 
     // ── workspaces (whole-array replacement; validated item-by-item) ──
     if (input.workspaces !== undefined) {
@@ -257,7 +295,11 @@ export class RuntimeConfigStore {
 
   /** Rewrite the authoritative config.json atomically with the current config. */
   persist(): void {
-    mkdirSync(dirname(this.path), { recursive: true });
+    // A relative config path (the default `config.json`) has dirname '.';
+    // mkdirSync('.', {recursive:true}) throws EEXIST on Windows, which made
+    // every config PATCH fail. Only create a real parent directory.
+    const dir = dirname(this.path);
+    if (dir && dir !== '.' && dir !== this.path) mkdirSync(dir, { recursive: true });
     const tmp = `${this.path}.tmp`;
     const body = JSON.stringify(this.config, null, 2) + '\n';
     try {
@@ -297,5 +339,15 @@ function autonomyMeta(): Record<string, string> {
     baseURL: 'live',
     apiKey: 'live',
     taskGates: 'live',
+  };
+}
+
+function contextMeta(): Record<string, string> {
+  return {
+    tier: 'live',
+    contextWindow: 'live',
+    charsPerToken: 'live',
+    promptUtilization: 'live',
+    reservedOutputTokens: 'live',
   };
 }

@@ -13,9 +13,19 @@ export function MergesPageClient({ departmentId }: { departmentId: string }) {
     refetchInterval: 5_000,
   });
 
-  const mergeEvents = (eventsQuery.data ?? []).filter(
-    e => e.event_type === 'review_submitted' || e.event_type === 'review_completed'
-  );
+  // Local ticket events and the real engine journal share this feed. Accept the
+  // engine's review vocabulary too, otherwise the merge queue stays empty while
+  // reviews are actually happening.
+  const REVIEW_EVENT_TYPES = new Set([
+    'review_submitted',
+    'review_completed',
+    'revision.reviewed',
+    'revision.rejected',
+    'revision.verified',
+    'report.ready',
+    'job.completed',
+  ]);
+  const mergeEvents = (eventsQuery.data ?? []).filter(e => REVIEW_EVENT_TYPES.has(e.event_type));
 
   return (
     <div className="flex h-full flex-col">
@@ -42,7 +52,21 @@ export function MergesPageClient({ departmentId }: { departmentId: string }) {
           .slice()
           .reverse()
           .map(event => {
-            const isCompleted = event.event_type === 'review_completed';
+            const isCompleted =
+              event.event_type === 'review_completed' ||
+              event.event_type === 'revision.reviewed' ||
+              event.event_type === 'revision.verified' ||
+              event.event_type === 'job.completed' ||
+              event.event_type === 'report.ready';
+            const payload = (event.metadata?.payload ?? {}) as Record<string, unknown>;
+            const detail =
+              typeof payload.verdict === 'string'
+                ? String(payload.verdict)
+                : typeof payload.state === 'string'
+                  ? String(payload.state)
+                  : event.event_type.includes('.')
+                    ? ''
+                    : event.new_value ?? '';
             return (
               <div
                 key={event.ticket_event_id}
@@ -56,7 +80,7 @@ export function MergesPageClient({ departmentId }: { departmentId: string }) {
                 <div className="min-w-0 flex-1">
                   <div className="text-sm text-white/75">
                     {isCompleted ? 'Review completed' : 'Submitted for review'}
-                    {event.new_value ? `: ${event.new_value}` : ''}
+                    {detail ? `: ${detail}` : ''}
                   </div>
                   <div className="mt-0.5 flex items-center gap-2 text-[10px] text-white/30">
                     {event.workstation_name && <span>{event.workstation_name}</span>}

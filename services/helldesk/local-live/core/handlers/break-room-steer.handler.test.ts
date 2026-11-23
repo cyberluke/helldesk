@@ -31,6 +31,7 @@ function makeDeps(log: string[]) {
       fabric,
       broadcast: (evt: Record<string, unknown>) => emitted.push(evt),
       queueNudge: async (agentId: string, message: string) => { log.push(`nudge:${agentId}`); nudges.push({ agentId, message }); return 'n1'; },
+      queueMissionSteer: async (ticketId: string, note: string, kind: string) => ({ ok: true as const, delivery: 'queued_for_next_boundary', ticketId, note, kind }),
     },
     published, nudges, emitted,
   };

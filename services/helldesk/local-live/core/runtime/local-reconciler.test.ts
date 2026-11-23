@@ -70,19 +70,23 @@ describe('LocalDepartment reconciler surface (no stubs)', () => {
     const { department, dir } = freshDepartment();
     try {
       const t = department as unknown as LocalDepartment;
-      await t.updateDepartmentConfig({ local_repo: { adapter: 'local-git', repo_path: 'C:/input-a', output_repo: { repo_path: 'C:/output-a', init_if_missing: true }, branch: 'task-a' } });
+      const inputA = join(dir, 'input-a');
+      const inputB = join(dir, 'input-b');
+      const outputA = join(dir, 'output-a');
+      const outputB = join(dir, 'output-b');
+      await t.updateDepartmentConfig({ local_repo: { adapter: 'local-git', repo_path: inputA, output_repo: { repo_path: outputA, init_if_missing: true }, branch: 'task-a' } });
       const first = await t.createTicket({ type: 'issue', title: 'task A' });
-      await t.updateDepartmentConfig({ local_repo: { adapter: 'local-git', repo_path: 'C:/input-b', output_repo: { repo_path: 'C:/output-b', init_if_missing: true }, branch: 'task-b' } });
+      await t.updateDepartmentConfig({ local_repo: { adapter: 'local-git', repo_path: inputB, output_repo: { repo_path: outputB, init_if_missing: true }, branch: 'task-b' } });
       const second = await t.createTicket({ type: 'issue', title: 'task B' });
       const a = await resolveLocalDispatch(t, '', first);
       const b = await resolveLocalDispatch(t, '', second);
-      expect(a?.cfg.repoPath).toBe('C:/input-a');
-      expect(a?.cfg.outputRepo?.repoPath).toBe('C:/output-a');
+      expect(a?.cfg.repoPath).toBe(inputA);
+      expect(a?.cfg.outputRepo?.repoPath).toBe(outputA);
       expect(a?.cfg.branch).toBe('task-a');
-      expect(b?.cfg.outputRepo?.repoPath).toBe('C:/output-b');
+      expect(b?.cfg.outputRepo?.repoPath).toBe(outputB);
       await t.updateTicket(first.ticket_id, { metadata: { local_repo_snapshot: second.metadata.local_repo_snapshot } });
       const unchanged = await t.getTicketAsync(first.ticket_id);
-      expect((await resolveLocalDispatch(t, '', unchanged!))?.cfg.outputRepo?.repoPath).toBe('C:/output-a');
+      expect((await resolveLocalDispatch(t, '', unchanged!))?.cfg.outputRepo?.repoPath).toBe(outputA);
     } finally { cleanup(department, dir); }
   });
   it('persists dependencies and never releases a task when its prerequisite failed', async () => {
@@ -251,5 +255,82 @@ describe('RuntimeEventBus', () => {
     unsub();
     bus.emit({ type: 'ticket', departmentId: 't1', payload: { type: 'c' } });
     expect(seen).toEqual(['a', 'b']);
+  });
+});
+
+describe('LocalDepartment local_repo routing (single-repo workspace)', () => {
+  it('accepts output_repo:null as an explicit clear instead of failing validation', async () => {
+    const { department, dir } = freshDepartment();
+    try {
+      const t = department as unknown as LocalDepartment;
+      const repo = makeDispatchableRepo(dir);
+      await t.updateDepartmentConfig({
+        local_repo: {
+          adapter: 'local-git',
+          repo_path: repo,
+          output_repo: { repo_path: join(dir, 'out'), init_if_missing: true },
+          branch: 'main',
+        },
+      });
+      const cleared = await t.updateDepartmentConfig({
+        local_repo: { adapter: 'local-git', repo_path: repo, output_repo: null, branch: 'main' },
+      });
+      expect(cleared.local_repo?.output_repo).toBeUndefined();
+      expect(cleared.local_repo?.repo_path).toBe(repo);
+    } finally { cleanup(department, dir); }
+  });
+
+  it('auto-initialises an existing plain workspace directory as a git repo on save', async () => {
+    const { department, dir } = freshDepartment();
+    try {
+      const t = department as unknown as LocalDepartment;
+      const workspace = join(dir, 'plain-workspace');
+      mkdirSync(workspace, { recursive: true });
+      await t.updateDepartmentConfig({
+        local_repo: { adapter: 'local-git', repo_path: workspace, branch: 'main' },
+      });
+      expect(existsSync(join(workspace, '.git'))).toBe(true);
+      const head = Bun.spawnSync(['git', 'rev-parse', '--verify', 'HEAD'], { cwd: workspace });
+      expect(head.exitCode).toBe(0);
+    } finally { cleanup(department, dir); }
+  });
+
+  it('creates a missing workspace directory and initialises it on save', async () => {
+    const { department, dir } = freshDepartment();
+    try {
+      const t = department as unknown as LocalDepartment;
+      const workspace = join(dir, 'new-workspace');
+      await t.updateDepartmentConfig({
+        local_repo: { adapter: 'local-git', repo_path: workspace, branch: 'main' },
+      });
+      expect(existsSync(workspace)).toBe(true);
+      expect(existsSync(join(workspace, '.git'))).toBe(true);
+      const head = Bun.spawnSync(['git', 'rev-parse', '--verify', 'HEAD'], { cwd: workspace });
+      expect(head.exitCode).toBe(0);
+    } finally { cleanup(department, dir); }
+  });
+
+  it('archives and restores tickets behind the local overlay', async () => {
+    const { department, dir } = freshDepartment();
+    try {
+      const t = department as unknown as LocalDepartment;
+      const ticket = await t.createTicket({
+        type: 'issue',
+        title: 'archive me',
+        workstation_id: 'workstation-local',
+      });
+      const filter = { workstation_id: 'workstation-local' };
+
+      expect((await t.listTickets(filter)).some(row => row.ticket_id === ticket.ticket_id)).toBe(true);
+      expect(await t.archiveTickets([ticket.ticket_id], true)).toBe(1);
+      expect((await t.listTickets(filter)).some(row => row.ticket_id === ticket.ticket_id)).toBe(false);
+
+      const archived = (await t.listTickets({ ...filter, include_archived: true }))
+        .find(row => row.ticket_id === ticket.ticket_id) as { archived?: boolean } | undefined;
+      expect(archived?.archived).toBe(true);
+
+      expect(await t.archiveTickets([ticket.ticket_id], false)).toBe(1);
+      expect((await t.listTickets(filter)).some(row => row.ticket_id === ticket.ticket_id)).toBe(true);
+    } finally { cleanup(department, dir); }
   });
 });

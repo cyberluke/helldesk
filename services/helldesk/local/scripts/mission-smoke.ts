@@ -6,17 +6,17 @@
  *   - mutation:  writable actuator against a real git workspace fixes the
  *                seeded bug:
  *                  RUNNER=openai -> OpenAiMutationRunner (WRITE+SHELL tools,
- *                                    deepseek via LiteLLM)
+ *                                    deepseek via an OpenAI-compatible endpoint)
  *                  RUNNER=codex  -> real ChatGPT Codex CLI
  *                                    (codex exec -m gpt-6-luna)
  *   - evidence:  controller captures real content SHA-256 of changed files
  *   - review:    tool-capable OpenAI reviewer (review_* snapshot tools) -> PASS
- *                (reviewer stays on the reachable LiteLLM route; the Codex CLI
+ *                (reviewer stays on the reachable OpenAI-compatible route; the Codex CLI
  *                has no HTTP OpenAI-compatible reviewer surface)
  *   - oracle:    every mandatory gate PASS with a resolved evidence artifact
  *
  * Requires a reachable OpenAI-compatible endpoint for the reviewer. Defaults to
- * LiteLLM (127.0.0.1:4000 -> differential_sseproxy). No local kilo binary needed.
+ * an OpenAI-compatible endpoint (demo-model). No local kilo binary needed.
  *
  * Run:   bun run scripts/mission-smoke.ts
  * Env:   GT_MUTATION_RUNNER (openai|codex|kilo)
@@ -41,22 +41,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 
-// REVIEWER route. The DeepSeek proxy (differential_sseproxy) cannot reliably emit
+// REVIEWER route. The DeepSeek proxy (demo-model) cannot reliably emit
 // the strict reviewer JSON (constant PARSE_FAILURE/ZERO_COVERAGE/INCONCLUSIVE),
 // so the DEFAULT reviewer is gpt-6-luna via the real codex CLI (createCodexRunner),
 // which returns the strict JSON deterministically. Set GT_REVIEW_RUNNER=openai to
 // fall back to the HTTP OpenAI route.
 const REVIEW_RUNNER = process.env.GT_REVIEW_RUNNER ?? 'codex';
 const REVIEW_ENDPOINT = process.env.GT_REVIEW_BASE ?? 'http://127.0.0.1:4000/v1';
-const REVIEW_MODEL = process.env.GT_REVIEW_MODEL ?? (REVIEW_RUNNER === 'codex' ? 'gpt-6-luna' : 'differential_sseproxy');
-const REVIEW_PROVIDER = process.env.GT_REVIEW_PROVIDER ?? (REVIEW_RUNNER === 'codex' ? 'codex' : 'litellm-edge');
+const REVIEW_MODEL = process.env.GT_REVIEW_MODEL ?? (REVIEW_RUNNER === 'codex' ? 'gpt-6-luna' : 'demo-model');
+const REVIEW_PROVIDER = process.env.GT_REVIEW_PROVIDER ?? (REVIEW_RUNNER === 'codex' ? 'codex' : 'openai-compatible');
 
 // MUTATION actuator: 'openai' (HTTP OpenAI-compatible tools) | 'codex' (real
 // ChatGPT Codex CLI, codex exec -m gpt-6-luna) | 'kilo' (headless Kilo SDK).
 const RUNNER = process.env.GT_MUTATION_RUNNER ?? 'openai';
 const MUT_MODEL = RUNNER === 'codex'
   ? (process.env.GT_MUTATION_MODEL ?? 'gpt-6-luna')
-  : (process.env.GT_MUTATION_MODEL ?? 'differential_sseproxy');
+  : (process.env.GT_MUTATION_MODEL ?? 'demo-model');
 const MUT_ENDPOINT = process.env.GT_MUTATION_BASE ?? REVIEW_ENDPOINT;
 const MUT_PROVIDER = RUNNER === 'codex' ? 'codex' : REVIEW_PROVIDER;
 const CODEX_BIN = process.env.GT_CODEX_BIN ?? '';

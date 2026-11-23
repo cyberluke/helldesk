@@ -71,12 +71,14 @@ export function engineAllowedForStage(engine: string, stage: EngineStageKey): bo
   return (REVIEW_CAPABLE_ENGINES as readonly string[]).includes(lower);
 }
 
-/** Seeded default matrix matching the CURRENT live runtime (2026-11-18): every
- * stage uses the kilo headless runtime over the litellm-edge provider route. */
+/** Default matrix: every stage uses the Kilo headless runtime, but NO provider,
+ * model or baseURL is pinned. The route is resolved at runtime from the
+ * operator's effective `kilo.json(c)` `.model` (or an explicit per-mission
+ * override), so changing the global model changes all stages together. */
 export function defaultEngineMatrix(): EngineMatrix {
   return {
-    mutation: { engine: 'kilo', providerID: 'litellm-edge', modelID: 'differential_sseproxy', baseURL: 'http://localhost:4000/v1' },
-    review: { engine: 'kilo', providerID: 'litellm-edge', modelID: 'differential_sseproxy', baseURL: 'http://localhost:4000/v1' },
-    adjudicate: { engine: 'kilo', providerID: 'litellm-edge', modelID: 'differential_sseproxy', baseURL: 'http://localhost:4000/v1' },
+    mutation: { engine: 'kilo' },
+    review: { engine: 'kilo' },
+    adjudicate: { engine: 'kilo' },
   };
 }

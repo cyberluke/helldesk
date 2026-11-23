@@ -118,7 +118,7 @@ ${mergeInstructions}
  *
  * In this mode, the soul already created the PR. The qualityAssurance reviews
  * the changes and adds GitHub review comments (approve or request changes).
- * The auto-resolve system detects unresolved comments and dispatches polecats
+ * The auto-resolve system detects unresolved comments and dispatches souls
  * to address them, creating a unified feedback loop for both AI and human reviews.
  */
 function buildPRReviewPrompt(params: {

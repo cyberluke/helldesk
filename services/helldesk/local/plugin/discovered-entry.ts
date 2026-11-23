@@ -1,5 +1,5 @@
 /**
- * CyberLuke Local HELLDESK — discovered plugin shim.
+ * HELLDESK Local — discovered plugin shim.
  *
  * Kilo auto-discovers every `.ts` file in its user `plugin/` directory
  * (e.g. `~/.config/kilo/plugin/`). This shim re-exports the real plugin
@@ -14,11 +14,11 @@
  * is the last verification step left to the operator (a live VS Code host is
  * not available in the build sandbox). It registers only `tool` + `event`
  * hooks, so it cannot strip the `Hakakatoni Ultra` persona or the
- * `cyberluke-clean-system-prompt` plugin.
+ * existing prompt-cleanup plugin.
  */
 import { LocalHelldeskPlugin } from '<REPO_PATH>/services/helldesk/local/plugin/index.ts';
 
 export default {
-  id: 'cyberluke-local-helldesk',
+  id: 'helldesk-local',
   server: LocalHelldeskPlugin,
 };

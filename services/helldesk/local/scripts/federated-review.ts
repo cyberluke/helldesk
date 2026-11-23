@@ -3,7 +3,7 @@
  * FEDERATED REAL REVIEW — drives a REAL model review through the HELLDESK Engine.
  *
  * Proves the review path actually calls out to a reachable real model endpoint
- * (LiteLLM at 127.0.0.1:4000 -> differential_sseproxy -> deepseek backend) and
+ * (an OpenAI-compatible endpoint -> demo-model -> backend) and
  * persists genuine findings + model provenance — no fixture, no fake runner.
  *
  * The Engine uses its `openai` runner (createOpenAiRunner) against the resolved
@@ -25,7 +25,7 @@ import { getJob } from '../src/jobs';
 import { loadConfigLegacy } from '../tests/config-factory';
 
 const BASE_URL = process.env.GT_REVIEW_BASE ?? 'http://127.0.0.1:4000/v1';
-const MODEL = process.env.GT_REVIEW_MODEL ?? 'differential_sseproxy';
+const MODEL = process.env.GT_REVIEW_MODEL ?? 'demo-model';
 const DATA_DIR = process.env.GT_DATA_DIR ?? mkdtempSync(join(tmpdir(), 'gt-fedreview-'));
 
 function makeGitWs(): { dir: string; cleanup(): void } {
@@ -43,19 +43,19 @@ const dataDir = DATA_DIR;
 const d = openDb(join(dataDir, 'helldesk.db'));
 d.runMigration();
 
-// Config: openai runner against the reachable LiteLLM endpoint. Legacy factory
+// Config: openai runner against a reachable OpenAI-compatible endpoint. Legacy factory
 // builds a valid Config; we override provider + model on the returned object.
 const cfg = loadConfigLegacy('openai');
 cfg.policy.providers = {
-  'litellm-edge': { kind: 'openai-compatible', baseURL: BASE_URL, modelID: MODEL, apiKey: '' },
+  'openai-compatible': { kind: 'openai-compatible', baseURL: BASE_URL, modelID: MODEL, apiKey: '' },
 };
-cfg.policy.reviewerModel = { providerID: 'litellm-edge', modelID: MODEL };
+cfg.policy.reviewerModel = { providerID: 'openai-compatible', modelID: MODEL };
 cfg.daemon.dataDir = dataDir;
 
 const telemetry = createTelemetry({ logDir: join(dataDir, 'logs') });
 // Use the REAL openai runner (createOpenAiRunner) — not fake.
 const runner = createOpenAiRunner({ kind: 'openai-compatible', baseURL: BASE_URL, modelID: MODEL, apiKey: '' });
-const resolvedModels = new Map<string, { providerID: string; modelID: string }>([['inherited', { providerID: 'litellm-edge', modelID: MODEL }]]);
+const resolvedModels = new Map<string, { providerID: string; modelID: string }>([['inherited', { providerID: 'openai-compatible', modelID: MODEL }]]);
 const engine = new Engine({ d, config: cfg, snapshotStore: join(dataDir, 'snapshots'), reportDir: join(dataDir, 'reports'), runner, resolvedModels });
 engine.onStartup();
 engine.reload();

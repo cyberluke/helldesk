@@ -2,9 +2,10 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makeGitFixture } from '../tests/helpers';
+import { loadConfig } from '../src/config';
 
-const BASE = 'http://127.0.0.1:4790';
-const DD = 'C:\\Users\\lukes.COREI9\\AppData\\Local\\CyberLuke\\LocalGasDepartment';
+const BASE = process.env.HELLDESK_CONTROL_URL ?? `http://127.0.0.1:${loadConfig().daemon.port}`;
+const DD = 'C:\\Users\\lukes.COREI9\\AppData\\Local\\HELLDESK\\LocalDepartment';
 const token = readFileSync(join(DD, 'token'), 'utf-8').trim();
 const A = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 const get = (p: string) => fetch(BASE + p).then((r) => r.json()).catch(() => null);
@@ -38,7 +39,7 @@ console.log('[two] both terminal:', done.a && done.b);
 const workers = (await get('/v1/workers'))?.workers ?? [];
 for (const jobId of [p1.jobId, p2.jobId]) {
   const w = workers.filter((x: any) => x.job_id === jobId);
-  const real = w.every((x: any) => x.provider_id === 'litellm-edge');
+  const real = w.every((x: any) => x.provider_id === 'openai-compatible');
   console.log(`[two] ${jobId}: roles=${w.map((x: any)=>`${x.role}:${x.status}`).join(', ')} allReal=${real}`);
 }
 // Reports persisted for both.

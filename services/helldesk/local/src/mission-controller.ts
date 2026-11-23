@@ -5,12 +5,16 @@ import {
   listRevisions, setQualityGate, getQualityGates, isRevisionVerified10,
   addEvidence, hashFileContent, setRepairPlan,
   upsertClaim, activeClaimContext, emitMissionEvent,
+  bumpReplanStreak, resetReplanStreak,
   type MissionState, type RevisionState, type GateStatus,
+  scheduleBlockedRetry, clearHumanAcceptance,
 } from './mission-repository';
 import type { MutationRunner, RepairResult } from './mutation-runner';
 import { changedFilesSinceFull, fingerprintWorkspace } from './mutation-runner';
 import { acquireLease, releaseLease, renewLease, reclaimStaleLease } from './reconciler';
-import { existsSync } from 'node:fs';
+import { terminateWorkersForJob } from './worker-supervisor';
+import { getJob } from './jobs';
+import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -73,6 +77,10 @@ export interface ControllerDeps {
    *  (falling back to `runner` when the mission has no matrix override). Lets a
    *  task pin e.g. codex for MUTATION while another task uses kilo. */
   runnerFor?: (missionId: string) => MutationRunner;
+  /** Effective default mutation route (no hardcoded provider/model). */
+  mutationRoute?: { providerID: string; modelID: string };
+  /** Effective route for a mission's engine-matrix mutation override. */
+  mutationRouteFor?: (missionId: string) => { providerID: string; modelID: string };
   /** Mandatory gate keys a ticket must PASS for VERIFIED_10_10. Per-ticket optional. */
   mandatoryGates?: string[];
   /** Task-specific acceptance gates for THIS mission/ticket (e.g. a divide-by-zero
@@ -89,6 +97,44 @@ export interface ControllerDeps {
    *  keeps advancing; a later `verifyPending` sweep drives the queued batch through
    *  the real gates. Absent => 'auto' preserves the historic always-review loop. */
   verifyMode?: () => 'auto' | 'deferred';
+  /** Long-horizon governors (see AutonomyConfigSchema). */
+  maxMissionWallClockMs?: number;
+  maxMissionRevisions?: number;
+  maxMissionReviewTokens?: number;
+  mutationWatchdogMs?: number;
+}
+
+/**
+ * A revision that is REJECTED/SUPERSEDED must not keep a review execution alive.
+ * Cancel its non-terminal job, kill the stale workers, drop the job lease, and
+ * journal it. Without this a rejected revision's reviewers keep running (and
+ * look "active") while the mission has already moved to a newer revision.
+ */
+export function cancelReviewForRevision(d: Db, revisionId: string, reason: string): void {
+  const rev = getRevision(d, revisionId);
+  if (!rev?.review_job_id) return;
+  const job = getJob(d, rev.review_job_id);
+  if (!job) return;
+  if (['COMPLETED_PASS', 'COMPLETED_FINDINGS', 'INCONCLUSIVE', 'FAILED_TERMINAL', 'CANCELLED'].includes(job.state)) return;
+  const nowIso = new Date().toISOString();
+  d.db.query(`UPDATE review_jobs SET state='CANCELLED', updated_at=? WHERE job_id=?`).run(nowIso, job.jobId);
+  terminateWorkersForJob(d, job.jobId, reason);
+  d.db.query(`DELETE FROM leases WHERE owner=?`).run(`job:${job.jobId}`);
+  emitMissionEvent(d, 'review.cancelled', { revision_id: revisionId, job_id: job.jobId, reason });
+}
+
+/** Tick sweep: cancel any non-terminal review attached to a dead revision. */
+export function sweepStaleReviewJobs(d: Db): number {
+  const rows = d.db
+    .query<{ revision_id: string }, []>(
+      `SELECT r.revision_id FROM review_jobs j
+         JOIN ticket_revisions r ON r.review_job_id=j.job_id
+        WHERE j.state IN ('QUEUED','RUNNING','REVIEWING_A_B','ADJUDICATING')
+          AND r.state IN ('REJECTED','SUPERSEDED')`
+    )
+    .all();
+  for (const row of rows) cancelReviewForRevision(d, row.revision_id, 'revision is rejected/superseded');
+  return rows.length;
 }
 
 /** Normalize a failure signature so conservative scientific REPLAN is forced
@@ -119,6 +165,24 @@ const MAX_INCONCLUSIVE_REVISIONS = 3;
  *  FINDINGS is accepted immediately; only epistemically-invalid (INCONCLUSIVE)
  *  verdicts trigger a bounded re-review. Default 3. */
 const MAX_CONVERGENT_REVIEW_ATTEMPTS = 3;
+/** HARD ceiling on how many times a single ticket may be replanned (NO_CHANGE /
+ *  FAILED_PLAN / SCRATCH_ONLY / identical-failure-no-delta) before the mission
+ *  surfaces as BLOCKED. This is a SAFETY VALVE, deliberately set far above any
+ *  realistic convergence so legitimate long-horizon autonomous work (the kind
+ *  the ExcellenceGovernor / review loop exists to enable — "a weekend debugging one line"
+ *  is thousands of genuine revisions, not a bug) is never throttled. It only
+ *  trips on a true unbounded spin (e.g. a mutator that can never satisfy its own
+ *  gates). The observed 4614-revision runaway would have kept being legitimate if
+ *  each revision had landed a real delta toward the objective rather than
+ *  probe-only output; it is caught by the SCRATCH_ONLY classifier + this ceiling. */
+const MAX_PLAN_REVISIONS = 3000;
+/**
+ * Fail-fast ceiling for a NO-DELTA / SCRATCH_ONLY consecutive-replan spin. A
+ * mutator that keeps producing no recognized content delta (probe-only commits,
+ * identical no-change) parks the mission after this many consecutive replans,
+ * instead of spinning toward MAX_PLAN_REVISIONS (3000). Real deltas reset the
+ * streak, so legitimate long-horizon work is never throttled. */
+const MAX_CONSECUTIVE_NO_DELTA_REPLANS = 24;
 
 /** The single durable controller operation. May be called on every scheduler tick.
  *  Returns a human-readable action for observability. Idempotency is enforced by
@@ -132,6 +196,59 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
   if (!mission) return { action: 'no-mission', nextState: 'CANCELLED' };
   const terminal: MissionState[] = ['VERIFIED_10_10', 'BLOCKED_EXTERNAL', 'CANCELLED'];
   if (terminal.includes(mission.state)) return { action: 'terminal', nextState: mission.state };
+
+  // MISSION BUDGETS ARE OPT-IN — NEVER A HIDDEN DEFAULT.
+  //
+  // HELLDESK is a long-horizon coding platform: a mission may legitimately run
+  // for days across many review/replan cycles. An unconfigured limit therefore
+  // means UNBOUNDED, not "6 hours". A silent default once parked a productive
+  // mission at 361 minutes against a 360-minute ceiling; that is not allowed to
+  // happen again. Only an operator-supplied `maxMissionWallClockMs`,
+  // `maxMissionRevisions` or `maxMissionReviewTokens` may park a mission, and a
+  // budget park is still not auto-retried (a human owns that call).
+  //
+  // Pathological loops are still bounded by MAX_CONSECUTIVE_NO_DELTA_REPLANS and
+  // MAX_PLAN_REVISIONS below — those are correctness guards, not spend clocks.
+  {
+    const blockers: string[] = [];
+
+    if (typeof deps.maxMissionWallClockMs === 'number' && deps.maxMissionWallClockMs > 0) {
+      const age = Date.now() - Date.parse(mission.created_at);
+      if (Number.isFinite(age) && age > deps.maxMissionWallClockMs) {
+        blockers.push(
+          `budget:wall-clock ${Math.round(age / 60_000)}min > ${Math.round(deps.maxMissionWallClockMs / 60_000)}min`
+        );
+      }
+    }
+
+    if (typeof deps.maxMissionRevisions === 'number' && deps.maxMissionRevisions > 0) {
+      const n = d.db
+        .query<{ n: number }, [string]>(`SELECT COUNT(*) AS n FROM ticket_revisions WHERE ticket_id IN (SELECT ticket_id FROM mission_tickets WHERE mission_id=?)`)
+        .get(missionId)?.n ?? 0;
+      if (n >= deps.maxMissionRevisions) blockers.push(`budget:revisions ${n} >= ${deps.maxMissionRevisions}`);
+    }
+
+    if (typeof deps.maxMissionReviewTokens === 'number' && deps.maxMissionReviewTokens > 0) {
+      const tokens = d.db
+        .query<{ tokens: number }, [string]>(
+          `SELECT COALESCE(SUM(a.tokens_in + a.tokens_out), 0) AS tokens
+             FROM agent_runs a JOIN review_jobs j ON j.job_id=a.job_id
+            WHERE j.source='mission' AND j.job_id IN (
+              SELECT review_job_id FROM ticket_revisions
+               WHERE ticket_id IN (SELECT ticket_id FROM mission_tickets WHERE mission_id=?))`
+        )
+        .get(missionId)?.tokens ?? 0;
+      if (tokens > deps.maxMissionReviewTokens) {
+        blockers.push(`budget:review-tokens ${tokens} > ${deps.maxMissionReviewTokens}`);
+      }
+    }
+
+    if (blockers.length) {
+      updateMissionState(d, missionId, 'BLOCKED_EXTERNAL', { blocked_reason: blockers.join('; ') });
+      emitMissionEvent(d, 'mission.budget_blocked', { mission_id: missionId, blockers });
+      return { action: 'budget-blocked', nextState: 'BLOCKED_EXTERNAL' };
+    }
+  }
 
   // Task-specific acceptance gates take precedence; fall back to per-ticket
   // mandatoryGates, then the turbine-diagnostic default. A divide-by-zero mission
@@ -152,6 +269,9 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
   });
   if (!target) {
     if (tickets.length && tickets.every((b) => b.verification_state === 'VERIFIED_10_10')) {
+      // Machine verification is not human acceptance: the board waits for the
+      // operator's explicit decision before the ticket is CLOSED.
+      clearHumanAcceptance(d, missionId);
       updateMissionState(d, missionId, 'VERIFIED_10_10', { verified_at: new Date().toISOString() });
       emitMissionEvent(d, 'mission.verified', { mission_id: missionId });
       return { action: 'mission-verified-10-10', nextState: 'VERIFIED_10_10' };
@@ -167,6 +287,7 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
     // blocker. Surface it honestly as BLOCKED with a precise reason so it is
     // never mistaken for "waiting on an external system".
     updateMissionState(d, missionId, 'BLOCKED_EXTERNAL', { blocked_reason: 'no runnable ticket: dependency graph unsatisfiable (cycles or missing mandatory dependency)' });
+    scheduleBlockedRetry(d, missionId, 'no runnable ticket: dependency graph unsatisfiable (cycles or missing mandatory dependency)');
     return { action: 'no-runnable-ticket', nextState: 'BLOCKED_EXTERNAL' };
   }
   mission.current_ticket_id = target.ticket_id;
@@ -271,6 +392,7 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
       if (getMission(d, missionId)?.state === 'CANCELLED') return { action: 'operator-cancelled', nextState: 'CANCELLED' };
       if (getTicket(d, target.ticket_id)?.objective !== target.objective) {
         updateRevision(d, current.revision_id, { state: 'SUPERSEDED' });
+    cancelReviewForRevision(d, current.revision_id, 'revision superseded');
         const next = createRevision(d, { ticket_id: target.ticket_id, parent_revision_id: current.revision_id, hypothesis_key: 'operator-steering' });
         updateTicket(d, target.ticket_id, { active_revision_id: next.revision_id, verification_state: 'UNVERIFIED' });
         updateMissionState(d, missionId, 'REPLANNING');
@@ -283,6 +405,7 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
           updateMissionState(d, missionId, 'REPLANNING');
           const sig = deriveFailureSignature([], [], [], ['inconclusive-exhausted']);
           updateRevision(d, current.revision_id, { state: 'REJECTED', failure_signature: sig });
+        cancelReviewForRevision(d, current.revision_id, 'revision rejected');
           const next = createRevision(d, { ticket_id: target.ticket_id, parent_revision_id: current.revision_id, hypothesis_key: `hyp-${current.revision_no + 1}`, failure_signature: sig, workspace_fingerprint_before: current.workspace_fingerprint_after || await fingerprintOrEmpty(ws) });
           updateTicket(d, target.ticket_id, { active_revision_id: next.revision_id });
           persistPlan(d, next.revision_id, { objective: target.objective ?? target.title, hypothesis_key: `hyp-${current.revision_no + 1}`, failure_signature: sig, reason: 'review-inconclusive-exhausted', findings: reviewVerdict.findings, failedGates: [], evidenceIds: [] });
@@ -306,8 +429,9 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
         const verified = isRevisionVerified10(d, current.revision_id, reviewVerdict.mandatoryGates.length ? reviewVerdict.mandatoryGates : mandatory);
         if (reviewVerdict.verdict === 'PASS' && verified) {
           updateRevision(d, current.revision_id, { state: 'VERIFIED_10_10', completed_at: new Date().toISOString() });
-          updateTicket(d, target.ticket_id, { verification_state: 'VERIFIED_10_10' });
-          updateMissionState(d, missionId, 'VERIFIED_10_10');
+          updateTicket(d, target.ticket_id, { verification_state: 'VERIFIED_10_10', execution_state: 'AWAITING_ACCEPTANCE' });
+          clearHumanAcceptance(d, missionId);
+          updateMissionState(d, missionId, 'VERIFIED_10_10', { verified_at: new Date().toISOString() });
           emitMissionEvent(d, 'mission.verified_10_10', { mission_id: missionId, ticket_id: target.ticket_id, revision_id: current.revision_id });
           return { action: 'verified-10-10-on-rereview', nextState: 'VERIFIED_10_10' };
         }
@@ -316,6 +440,7 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
         const failedKeys = updatedGates.filter((g) => g.status === 'FAIL').map((g) => g.gate_key);
         const sig = deriveFailureSignature(failedKeys, reviewVerdict.findings, [], []);
         updateRevision(d, current.revision_id, { state: 'REJECTED', failure_signature: sig });
+        cancelReviewForRevision(d, current.revision_id, 'revision rejected');
         const next = createRevision(d, { ticket_id: target.ticket_id, parent_revision_id: current.revision_id, hypothesis_key: `hyp-${current.revision_no + 1}`, failure_signature: sig, workspace_fingerprint_before: current.workspace_fingerprint_after || await fingerprintOrEmpty(ws) });
         updateTicket(d, target.ticket_id, { active_revision_id: next.revision_id });
         persistPlan(d, next.revision_id, { objective: target.objective ?? target.title, hypothesis_key: `hyp-${current.revision_no + 1}`, failure_signature: sig, reason: `review-${reviewVerdict.verdict}`, findings: reviewVerdict.findings, failedGates: failedKeys, evidenceIds: [] });
@@ -325,9 +450,10 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
     }
   }
 
-  // ── 4. if already verified terminal, release next and continue
+  // ── 4. if already verified terminal, release next and continue. The human
+  //       acceptance gate owns the final CLOSED transition.
   if (current.state === 'VERIFIED_10_10') {
-    updateTicket(d, target.ticket_id, { verification_state: 'VERIFIED_10_10', execution_state: 'CLOSED' });
+    updateTicket(d, target.ticket_id, { verification_state: 'VERIFIED_10_10', execution_state: 'AWAITING_ACCEPTANCE' });
     return { action: `ticket-verified-${target.title}`, nextState: mission.state };
   }
 
@@ -342,6 +468,7 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
   // of spinning on a per-workspace lease or a transient retry that can never run.
   if (!workspace) {
     updateMissionState(d, missionId, 'BLOCKED_EXTERNAL', { blocked_reason: `mission has no resolvable workspace path (workspace_id=${mission.workspace_id})` });
+    scheduleBlockedRetry(d, missionId, 'no-workspace-path');
     return { action: 'no-workspace-path', nextState: 'BLOCKED_EXTERNAL' };
   }
   const facts = activeClaimContext(d, missionId);
@@ -357,6 +484,15 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
     const prev = priorRevision;
     const prevWasEmpty = prev?.workspace_fingerprint_before && prev?.workspace_fingerprint_after && prev.workspace_fingerprint_before === prev.workspace_fingerprint_after;
     if (prev && prev.failure_signature === current.failure_signature && prevWasEmpty) {
+      // Replan cap for the identical-signature loop (same guard as NO_CHANGE):
+      // never burn unbounded revisions on a mutation that cannot produce a delta.
+      if (current.revision_no >= MAX_PLAN_REVISIONS) {
+        updateMissionState(d, missionId, 'BLOCKED_EXTERNAL', { blocked_reason: `replan-exhausted: identical-failure-no-delta after ${current.revision_no} revisions (mutator not producing a recognized content delta)` });
+        scheduleBlockedRetry(d, missionId, 'replan-exhausted');
+        updateRevision(d, current.revision_id, { state: 'BLOCKED' });
+        emitMissionEvent(d, 'mission.blocked', { mission_id: missionId, ticket_id: target.ticket_id, revision_id: current.revision_id, blocked_reason: 'replan-exhausted', revisions: current.revision_no });
+        return { action: 'replan-exhausted-blocked', nextState: 'BLOCKED_EXTERNAL' };
+      }
       updateMissionState(d, missionId, 'REPLANNING');
       emitMissionEvent(d, 'mission.replanned', { mission_id: missionId, ticket_id: target.ticket_id, revision_id: current.revision_id, reason: 'identical-failure-no-delta' });
       const next = createRevision(d, { ticket_id: target.ticket_id, parent_revision_id: current.revision_id, hypothesis_key: `hyp-${(current.revision_no + 1)}`, workspace_fingerprint_before: await fingerprintOrEmpty(workspace) });
@@ -421,7 +557,7 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
   // forever. Abort after a generous bounded window so the FAILED_TRANSIENT path
   // below replans instead of deadlocking. Real extraction on a 900-file
   // workspace can take minutes, so 15 min guards only a TRUE hang.
-  const WATCHDOG_MS = 15 * 60_000;
+  const WATCHDOG_MS = deps.mutationWatchdogMs ?? 25 * 60_000;
   const watchdog = setTimeout(() => controller.abort(), WATCHDOG_MS);
   let result: RepairResult;
   try {
@@ -433,13 +569,15 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
     // /v1/workers already lists review workers; this adds the mutator alongside.
     // Derive provider/model from the mission engine matrix (mutation slot) so it
     // matches what the mutator actually uses.
-    let mutProv = 'litellm-edge', mutModel = 'differential_sseproxy';
+    const workerRoute = deps.mutationRouteFor?.(missionId) ?? deps.mutationRoute;
+    let mutProv = workerRoute?.providerID ?? '';
+    let mutModel = workerRoute?.modelID ?? '';
     try {
       const mx = mission.engine_matrix_json ? JSON.parse(mission.engine_matrix_json) : {};
       const mut = mx?.mutation ?? mx?.mutator ?? {};
       if (mut?.providerID) mutProv = String(mut.providerID);
       if (mut?.modelID) mutModel = String(mut.modelID);
-    } catch { /* default */ }
+    } catch { /* keep the effective route */ }
     const mutWorkerId = `wk_${randomBytes(8).toString('hex')}`;
     const mutNow = new Date().toISOString();
     try {
@@ -468,12 +606,42 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
   if (getMission(d, missionId)?.state === 'CANCELLED') return { action: 'operator-cancelled', nextState: 'CANCELLED' };
   if (getTicket(d, target.ticket_id)?.objective !== target.objective) {
     updateRevision(d, current.revision_id, { state: 'SUPERSEDED' });
+    cancelReviewForRevision(d, current.revision_id, 'revision superseded');
     const next = createRevision(d, { ticket_id: target.ticket_id, parent_revision_id: current.revision_id, hypothesis_key: 'operator-steering' });
     updateTicket(d, target.ticket_id, { active_revision_id: next.revision_id, verification_state: 'UNVERIFIED' });
     updateMissionState(d, missionId, 'REPLANNING');
     return { action: 'operator-steering-replan', nextState: 'REPLANNING' };
   }
   updateRevision(d, current.revision_id, { workspace_fingerprint_after: result.workspaceFingerprintAfter || undefined, state: 'MUTATING' });
+
+  // CONVERGENCE RECOVERY (P0): the deliverable may already be COMMITTED by an
+  // earlier revision — the repo worktree is then clean, so a later revision
+  // legitimately produces NO new delta. Replanning from that state can never
+  // converge (nothing left to change, yet zero evidence ⇒ gates can never PASS).
+  // When the workspace content differs from where this ticket BEGAN, treat the
+  // existing tree as this revision's deliverable and run the real evidence +
+  // review path on it: the review snapshot diffs base→head and the review hook
+  // binds content-addressed evidence to those files. `current.revision_no > 1`
+  // plus the fingerprint check ensure an untouched workspace can never "verify".
+  if ((result.outcome === 'NO_CHANGE' || result.outcome === 'FAILED_PLAN') && current.revision_no > 1) {
+    try {
+      const first = d.db
+        .query<{ workspace_fingerprint_before: string | null }, [string]>(
+          `SELECT workspace_fingerprint_before FROM ticket_revisions WHERE ticket_id=? ORDER BY revision_no ASC LIMIT 1`
+        )
+        .get(target.ticket_id);
+      // Use the runner's ALREADY-COMPUTED workspace fingerprint (sha256 hex) when
+      // it is genuine; never re-hash the tree on every replan tick (that made the
+      // NO_CHANGE loop measurably slower) and never accept a fake value.
+      const looksRealFingerprint = (v: string | undefined): v is string =>
+        typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
+      const nowFp = looksRealFingerprint(result.workspaceFingerprintAfter) ? result.workspaceFingerprintAfter : '';
+      if (first?.workspace_fingerprint_before && nowFp && nowFp !== first.workspace_fingerprint_before) {
+        emitMissionEvent(d, 'revision.existing-tree-verified', { mission_id: missionId, ticket_id: target.ticket_id, revision_id: current.revision_id, from: result.outcome });
+        result = { ...result, outcome: 'CHANGED', error: undefined };
+      }
+    } catch { /* any probe failure keeps the original no-delta outcome */ }
+  }
 
   switch (result.outcome) {
     case 'FAILED_TRANSIENT': {
@@ -485,6 +653,7 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
       if (attempts + 1 >= MAX_TRANSIENT_ATTEMPTS) {
         const sig = deriveFailureSignature([], result.error ? [result.error] : [], [], [`transient:x${attempts + 1}`]);
         updateRevision(d, current.revision_id, { state: 'REJECTED', failure_signature: sig });
+        cancelReviewForRevision(d, current.revision_id, 'revision rejected');
         updateMissionState(d, missionId, 'REPLANNING');
         const next = createRevision(d, { ticket_id: target.ticket_id, parent_revision_id: current.revision_id, hypothesis_key: `hyp-${current.revision_no + 1}`, failure_signature: sig, workspace_fingerprint_before: await fingerprintOrEmpty(workspace) });
         updateTicket(d, target.ticket_id, { active_revision_id: next.revision_id });
@@ -499,19 +668,45 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
       return { action: 'infra-retry', nextState: 'ACTIVE' };
     }
     case 'BLOCKED_EXTERNAL': {
-      updateMissionState(d, missionId, 'BLOCKED_EXTERNAL', { blocked_reason: result.blocker?.description ?? 'external blocker', blocked_details: result.blocker ? JSON.stringify(result.blocker) : undefined });
+      const blockerReason = result.blocker?.description ?? 'external blocker';
+      updateMissionState(d, missionId, 'BLOCKED_EXTERNAL', { blocked_reason: blockerReason, blocked_details: result.blocker ? JSON.stringify(result.blocker) : undefined });
+      scheduleBlockedRetry(d, missionId, blockerReason);
       updateRevision(d, current.revision_id, { state: 'BLOCKED' });
       emitMissionEvent(d, 'mission.blocked', { mission_id: missionId, ticket_id: target.ticket_id, revision_id: current.revision_id, blocker: result.blocker });
       return { action: 'blocked-external', nextState: 'BLOCKED_EXTERNAL' };
     }
     case 'NO_CHANGE':
-    case 'FAILED_PLAN': {
+    case 'FAILED_PLAN':
+    case 'SCRATCH_ONLY': {
+      // FAIL-FAST consecutive no-delta guard: bump the streak; a mutator that
+      // keeps producing NO recognized content delta (scratch-only / no-change)
+      // parks BLOCKED after MAX_CONSECUTIVE_NO_DELTA_REPLANS instead of spinning
+      // toward MAX_PLAN_REVISIONS (3000). A real delta (CHANGED) resets it.
+      const streak = bumpReplanStreak(d, missionId);
+      if (streak >= MAX_CONSECUTIVE_NO_DELTA_REPLANS) {
+        updateMissionState(d, missionId, 'BLOCKED_EXTERNAL', { blocked_reason: `replan-exhausted: ${result.outcome} after ${streak} consecutive no-delta replans (mutator not producing a recognized content delta)` });
+        updateRevision(d, current.revision_id, { state: 'BLOCKED' });
+        emitMissionEvent(d, 'mission.blocked', { mission_id: missionId, ticket_id: target.ticket_id, revision_id: current.revision_id, blocked_reason: 'replan-exhausted-no-delta', revisions: current.revision_no, streak });
+        return { action: 'replan-exhausted-no-delta-blocked', nextState: 'BLOCKED_EXTERNAL' };
+      }
+      // Replan cap: a ticket that cannot produce a recognized delta after
+      // MAX_PLAN_REVISIONS is NOT made to loop forever — surface it as BLOCKED
+      // with a precise reason so the operator intervenes. This is the durable
+      // guard against the observed 4000+ revision runaway (a hung mutator that
+      // commits nothing advanceMission recognizes as a change).
+      if (current.revision_no >= MAX_PLAN_REVISIONS) {
+        updateMissionState(d, missionId, 'BLOCKED_EXTERNAL', { blocked_reason: `replan-exhausted: ${result.outcome} after ${current.revision_no} revisions (mutator not producing a recognized delta)` });
+        updateRevision(d, current.revision_id, { state: 'BLOCKED' });
+        emitMissionEvent(d, 'mission.blocked', { mission_id: missionId, ticket_id: target.ticket_id, revision_id: current.revision_id, blocked_reason: 'replan-exhausted', revisions: current.revision_no });
+        return { action: 'replan-exhausted-blocked', nextState: 'BLOCKED_EXTERNAL' };
+      }
       updateMissionState(d, missionId, 'REPLANNING');
       if (request.activeHypotheses[0]) {
         upsertClaim(d, { mission_id: missionId, canonical_key: `falsified:${hypKey(request)}`, claim: request.activeHypotheses[0], status: 'FALSIFIED', revision_id: current.revision_id });
       }
       const sig = deriveFailureSignature(priorFailedGates(d, priorRevision), result.error ? [result.error] : [], ['no-change'], []);
       updateRevision(d, current.revision_id, { state: 'REJECTED', failure_signature: sig });
+        cancelReviewForRevision(d, current.revision_id, 'revision rejected');
       const next = createRevision(d, { ticket_id: target.ticket_id, parent_revision_id: current.revision_id, hypothesis_key: `hyp-${current.revision_no + 1}`, workspace_fingerprint_before: await fingerprintOrEmpty(workspace) });
       updateTicket(d, target.ticket_id, { active_revision_id: next.revision_id });
       persistPlan(d, next.revision_id, { objective: target.objective ?? target.title, hypothesis_key: `hyp-${current.revision_no + 1}`, failure_signature: sig, reason: result.outcome, findings: request.currentFindings, failedGates: request.failedQualityGateKeys });
@@ -519,6 +714,9 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
       return { action: `replanned-${result.outcome}`, nextState: 'REPLANNING' };
     }
     case 'CHANGED': {
+      // A real content delta resets the consecutive no-delta streak (it broke
+      // the spin and is now producing deliverables).
+      resetReplanStreak(d, missionId);
       // Full-QA observable transcript of what the mutator did, so the operator
       // can inspect the actual delta (commands + file diff) before it is reviewed.
       for (const cmd of result.commandsExecuted ?? []) {
@@ -576,6 +774,7 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
       if (getMission(d, missionId)?.state === 'CANCELLED') return { action: 'operator-cancelled', nextState: 'CANCELLED' };
       if (getTicket(d, target.ticket_id)?.objective !== target.objective) {
         updateRevision(d, current.revision_id, { state: 'SUPERSEDED' });
+    cancelReviewForRevision(d, current.revision_id, 'revision superseded');
         const next = createRevision(d, { ticket_id: target.ticket_id, parent_revision_id: current.revision_id, hypothesis_key: 'operator-steering' });
         updateTicket(d, target.ticket_id, { active_revision_id: next.revision_id, verification_state: 'UNVERIFIED' });
         updateMissionState(d, missionId, 'REPLANNING');
@@ -593,9 +792,10 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
       const allTicketsVerified = tickets.every((b) => (b.ticket_id === target.ticket_id && verified) || b.verification_state === 'VERIFIED_10_10');
       if (verified && verdict.verdict === 'PASS' && verdict.evidenceResolved) {
         updateRevision(d, current.revision_id, { state: 'VERIFIED_10_10', completed_at: new Date().toISOString() });
-        updateTicket(d, target.ticket_id, { verification_state: 'VERIFIED_10_10', execution_state: 'CLOSED', active_revision_id: current.revision_id });
+        updateTicket(d, target.ticket_id, { verification_state: 'VERIFIED_10_10', execution_state: 'AWAITING_ACCEPTANCE', active_revision_id: current.revision_id });
         emitMissionEvent(d, 'ticket.verified', { mission_id: missionId, ticket_id: target.ticket_id, revision_id: current.revision_id });
         if (allTicketsVerified) {
+          clearHumanAcceptance(d, missionId);
           updateMissionState(d, missionId, 'VERIFIED_10_10', { verified_at: new Date().toISOString() });
           emitMissionEvent(d, 'mission.verified', { mission_id: missionId });
           return { action: `mission-verified`, nextState: 'VERIFIED_10_10' };
@@ -619,6 +819,7 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
           const failedKeys = updatedGates.filter((g) => g.status === 'FAIL').map((g) => g.gate_key);
           const sig = deriveFailureSignature(failedKeys.length ? failedKeys : [], [], result.changedFiles, ['inconclusive-exhausted']);
           updateRevision(d, current.revision_id, { state: 'REJECTED', failure_signature: sig });
+        cancelReviewForRevision(d, current.revision_id, 'revision rejected');
           const next = createRevision(d, { ticket_id: target.ticket_id, parent_revision_id: current.revision_id, hypothesis_key: `hyp-${current.revision_no + 1}`, failure_signature: sig, workspace_fingerprint_before: result.workspaceFingerprintAfter || await fingerprintOrEmpty(workspace) });
           updateTicket(d, target.ticket_id, { active_revision_id: next.revision_id });
           persistPlan(d, next.revision_id, { objective: target.objective ?? target.title, hypothesis_key: `hyp-${current.revision_no + 1}`, failure_signature: sig, reason: 'review-inconclusive-exhausted', findings: verdict.findings, failedGates: failedKeys, evidenceIds });
@@ -636,6 +837,7 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
       const failedKeys = updatedGates.filter((g) => g.status === 'FAIL').map((g) => g.gate_key);
       const sig = deriveFailureSignature(failedKeys, verdict.findings, result.changedFiles, []);
       updateRevision(d, current.revision_id, { state: 'REJECTED', failure_signature: sig });
+        cancelReviewForRevision(d, current.revision_id, 'revision rejected');
       const next = createRevision(d, { ticket_id: target.ticket_id, parent_revision_id: current.revision_id, hypothesis_key: `hyp-${current.revision_no + 1}`, failure_signature: sig, workspace_fingerprint_before: result.workspaceFingerprintAfter || await fingerprintOrEmpty(workspace) });
       updateTicket(d, target.ticket_id, { active_revision_id: next.revision_id });
       persistPlan(d, next.revision_id, { objective: target.objective ?? target.title, hypothesis_key: `hyp-${current.revision_no + 1}`, failure_signature: sig, reason: `review-${verdict.verdict}`, findings: verdict.findings, failedGates: failedKeys, evidenceIds });
@@ -729,15 +931,33 @@ function persistPlan(
 /** Capture one content-addressed evidence artifact. If the path exists on disk,
  *  hash the REAL bytes (P0 evidence — never a path+revision FNV). Otherwise,
  *  record a structural marker with zero bytes so the reviewer cannot claim it. */
-function captureEvidence(d: Db, revisionId: string, kind: string, relPath: string, workspace: string): string {
+export function captureEvidence(d: Db, revisionId: string, kind: string, relPath: string, workspace: string): string {
   const full = join(workspace, relPath);
   if (existsSync(full)) {
-    const { sha256, bytes } = hashFileContent(full);
-    const ev = addEvidence(d, { revision_id: revisionId, kind, path: relPath, sha256, bytes, producer: 'kilo-mutation', metadata: { workspace } });
-    return ev.artifact_id;
+    try {
+      // A DIRECTORY is never an evidence artifact. Git porcelain reports an
+      // untracked directory as `?? src/` unless `-uall` is passed; reading it
+      // would EISDIR and abort the whole controller tick.
+      if (!statSync(full).isDirectory()) {
+        const { sha256, bytes } = hashFileContent(full);
+        // IDEMPOTENT capture: recovery + re-review passes re-capture the same
+        // workspace delta. Without this the evidence manifest grows without bound
+        // (observed: package.json repeated 80x) and every review slows down.
+        const existing = d.db
+          .query<{ artifact_id: string }, [string, string, string, number]>(
+            `SELECT artifact_id FROM evidence_artifacts WHERE revision_id=? AND path=? AND sha256=? AND bytes=? LIMIT 1`
+          )
+          .get(revisionId, relPath, sha256, bytes);
+        if (existing) return existing.artifact_id;
+        const ev = addEvidence(d, { revision_id: revisionId, kind, path: relPath, sha256, bytes, producer: 'kilo-mutation', metadata: { workspace } });
+        return ev.artifact_id;
+      }
+    } catch {
+      /* fall through to the zero-byte marker */
+    }
   }
-  // The mutation reported the file but it is missing on disk: record a
-  // zero-byte marker so verification can never fabricate evidence for it.
+  // The mutation reported the file but it is missing on disk (or is a directory):
+  // record a zero-byte marker so verification can never fabricate evidence for it.
   const ev = addEvidence(d, { revision_id: revisionId, kind, path: relPath, sha256: '', bytes: 0, producer: 'kilo-mutation', metadata: { workspace, missing: true } });
   return ev.artifact_id;
 }

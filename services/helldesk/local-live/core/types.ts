@@ -38,7 +38,7 @@ export type CreateTicketInput = {
   /** Enforcer picker: which NAI process enforces this task (gated per-ticket the
    *  same way the engine gates `metadata.break_room_controls`). Accepted at creation
    *  so "create task + choose enforcer + attach spec" is ONE call.
-   *    - agents:  HELLDESK polecats/qualityAssurance colony dispatches it.
+   *    - agents:  HELLDESK souls/qualityAssurance colony dispatches it.
    *    - reviewer: the HELLDESK reviewer process verifies it.
    *    - excellenceGovernor: the NAI ExcellenceGovernor governor converges it to 10/10. */
   break_room_controls?: {
@@ -55,6 +55,8 @@ export type TicketFilter = {
   assignee_agent_ticket_id?: string;
   parent_ticket_id?: string;
   workstation_id?: string;
+  /** Local operator archive overlay: false/omitted = hide archived rows. */
+  include_archived?: boolean;
   limit?: number;
   offset?: number;
 };
@@ -331,8 +333,8 @@ export const DepartmentConfigSchema = z.object({
   /** Lightweight model for title generation, explore subagent, etc. */
   small_model: z.string().optional(),
 
-  /** Maximum concurrent polecats per workstation */
-  max_polecats_per_workstation: z.number().int().min(1).max(50).optional(),
+  /** Maximum concurrent souls per workstation */
+  max_souls_per_workstation: z.number().int().min(1).max(50).optional(),
 
   /**
    * department-level merge strategy. Workstations inherit this when they don't set their own.
@@ -471,7 +473,7 @@ export const WorkstationOverrideConfigSchema = z.object({
   git_push_flags: z.string().optional(),
 
   // Agent limits
-  max_concurrent_polecats: z.number().int().positive().optional(),
+  max_concurrent_souls: z.number().int().positive().optional(),
   max_dispatch_attempts: z.number().int().positive().optional(),
 });
 
@@ -508,7 +510,7 @@ export const DepartmentConfigUpdateSchema = z.object({
     })
     .optional(),
   small_model: z.string().optional(),
-  max_polecats_per_workstation: z.number().int().min(1).max(50).optional(),
+  max_souls_per_workstation: z.number().int().min(1).max(50).optional(),
   merge_strategy: MergeStrategy.optional(),
   qualityAssurance: z
     .object({

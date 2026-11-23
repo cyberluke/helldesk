@@ -14,6 +14,19 @@
  * No Cloudflare, no CF-Access, no server-only import: native localhost.
  */
 import { z } from 'zod';
+import { ObservabilitySnapshotSchema, type ObservabilitySnapshot } from './observability';
+import {
+  CommitDetailSchema,
+  CommitFileDiffSchema,
+  CommitListSchema,
+  CommitProvenanceSchema,
+  CommitWorkspaceSchema,
+  type CommitDetail,
+  type CommitFileDiff,
+  type CommitList,
+  type CommitProvenance,
+  type CommitWorkspace,
+} from './commits';
 
 function parseJsonOrIssue(v: string, ctx: z.RefinementCtx, label: string): unknown {
   try {
@@ -53,7 +66,7 @@ export type LooseWorkstation = z.output<typeof LooseWorkstationSchema>;
 export const TicketSchema = z.object({
   ticket_id: z.string(),
   type: z.enum(['issue', 'message', 'escalation', 'merge_request', 'shift', 'TicketCase', 'agent']),
-  status: z.enum(['open', 'in_progress', 'closed', 'failed']),
+  status: z.enum(['open', 'in_progress', 'in_review', 'closed', 'failed']),
   title: z.string(),
   body: z.string().nullable(),
   workstation_id: z.string().nullable(),
@@ -123,8 +136,8 @@ export const TicketEventSchema = z.object({
 export type TicketEvent = z.output<typeof TicketEventSchema>;
 
 export const TaggedTicketEventSchema = TicketEventSchema.extend({
-  workstation_id: z.string().optional(),
-  workstation_name: z.string().optional(),
+  workstation_id: z.string().nullable().optional(),
+  workstation_name: z.string().nullable().optional(),
 });
 export type DepartmentEvent = z.output<typeof TaggedTicketEventSchema>;
 
@@ -139,7 +152,7 @@ export const DepartmentConfigSchema = z.object({
   kilocode_token: z.string().optional(),
   owner_user_id: z.string().optional(),
   default_model: z.string().optional(),
-  max_polecats_per_workstation: z.number().optional(),
+  max_souls_per_workstation: z.number().optional(),
   qualityAssurance: z
     .object({
       gates: z.array(z.string()),
@@ -244,24 +257,76 @@ export const api = {
     parseSuccessData(await helldeskFetch(`/api/departments/${departmentId}/workstations`), LooseWorkstationSchema.array()),
   getWorkstation: async (workstationId: string): Promise<LooseWorkstation> =>
     parseSuccessData(await helldeskFetch(`/api/departments/${departmentIdOf(workstationId)}/workstations/${workstationId}`), LooseWorkstationSchema),
-  createWorkstation: async (departmentId: string, input: { name: string; git_url: string; default_branch: string }): Promise<LooseWorkstation> =>
-    parseSuccessData(await helldeskFetch(`/api/departments/${departmentId}/workstations`, { method: 'POST', body: JSON.stringify(input) }), WorkstationSchema),
+  createWorkstation: async (departmentId: string, input: { name: string; git_url?: string; default_branch?: string }): Promise<LooseWorkstation> =>
+    // Local workstation rows carry no department_id/updated_at (single-department
+    // runtime), so parse with the loose contract; the strict cloud shape would
+    // reject a create that actually succeeded. A repository is optional: Task
+    // Studio routes each task to its own workspace path (git_url defaults to '').
+    parseSuccessData(await helldeskFetch(`/api/departments/${departmentId}/workstations`, { method: 'POST', body: JSON.stringify(input) }), LooseWorkstationSchema),
   deleteWorkstation: async (departmentId: string, workstationId: string): Promise<void> => {
     await helldeskFetch(`/api/departments/${departmentId}/workstations/${workstationId}`, { method: 'DELETE' });
   },
 
-  listTickets: async (departmentId: string, workstationId: string): Promise<LooseTicket[]> =>
-    parseSuccessData(await helldeskFetch(`/api/departments/${departmentId}/workstations/${workstationId}/tickets`), LooseTicketSchema.array()),
+  listTickets: async (departmentId: string, workstationId?: string, includeArchived?: boolean): Promise<LooseTicket[]> => {
+    // A workstation filter is the seat board; no filter is the department board
+    // (which also carries the department-scoped engine mission projection).
+    const base = workstationId
+      ? `/api/departments/${departmentId}/workstations/${workstationId}/tickets`
+      : `/api/departments/${departmentId}/tickets`;
+    const path = includeArchived ? `${base}?include_archived=1` : base;
+    return parseSuccessData(await helldeskFetch(path), LooseTicketSchema.array());
+  },
   createTicket: async (departmentId: string, workstationId: string, input: { type: string; title: string; body?: string; priority?: string; labels?: string[]; metadata?: Record<string, unknown> }): Promise<LooseTicket> =>
     parseSuccessData(await helldeskFetch(`/api/departments/${departmentId}/workstations/${workstationId}/tickets`, { method: 'POST', body: JSON.stringify(input) }), LooseTicketSchema),
   sling: async (departmentId: string, workstationId: string, input: { title: string; body?: string; metadata?: Record<string, unknown> }): Promise<{ ticket: LooseTicket; agent: LooseAgent }> =>
     parseSuccessData(await helldeskFetch(`/api/departments/${departmentId}/workstations/${workstationId}/sling`, { method: 'POST', body: JSON.stringify(input) }), z.object({ ticket: LooseTicketSchema, agent: LooseAgentSchema })),
-  deleteTicket: async (departmentId: string, workstationId: string, ticketId: string): Promise<void> => {
-    await helldeskFetch(`/api/departments/${departmentId}/workstations/${workstationId}/tickets/${ticketId}`, { method: 'DELETE' });
+  deleteTicket: async (departmentId: string, workstationId: string | undefined, ticketId: string): Promise<void> => {
+    const path = workstationId
+      ? `/api/departments/${departmentId}/workstations/${workstationId}/tickets/${ticketId}`
+      : `/api/departments/${departmentId}/tickets/${ticketId}`;
+    await helldeskFetch(path, { method: 'DELETE' });
+  },
+  archiveTickets: async (departmentId: string, input: { ticketIds: string[]; archived?: boolean }): Promise<{ archived: boolean; count: number }> =>
+    parseSuccessData(
+      await helldeskFetch(`/api/departments/${departmentId}/tickets/archive`, { method: 'POST', body: JSON.stringify(input) }),
+      z.object({ archived: z.boolean(), count: z.number() }),
+    ),
+  updateTicketStatus: async (departmentId: string, workstationId: string | undefined, ticketId: string, status: string): Promise<LooseTicket> => {
+    // The PATCH returns EITHER a department Ticket OR a mission-move ack
+    // ({ticketId,status,missionId,delivery,assignment}) when the ticket is
+    // mission-owned (drag/assign on a mis_* mission ticket). Accept BOTH so the
+    // console never rejects the mission shape as 'unexpected response shape'.
+    // NOTE: helldeskFetch ALREADY parses JSON (returns the body, not a Response) —
+    // never call .json() on its return value.
+    const path = workstationId
+      ? `/api/departments/${departmentId}/workstations/${workstationId}/tickets/${ticketId}/status`
+      : `/api/departments/${departmentId}/tickets/${ticketId}/status`;
+    const body = await helldeskFetch(path, {
+      method: 'PATCH',
+      body: JSON.stringify({ status, agent_id: 'operator' }),
+    });
+    // Prefer the full Ticket shape; passthrough so extra mission fields are kept.
+    const ticket = LooseTicketSchema.passthrough().safeParse(body && (body as { data?: unknown }).data ? (body as { data: unknown }).data : body);
+    if (ticket.success) return ticket.data as LooseTicket;
+    // Mission-move ack (not a full Ticket) — map onto a conservative Ticket-like
+    // shape so the UI doesn't throw; callers treat a missing title/type as a move.
+    return parseSuccessData(body, LooseTicketSchema.partial().passthrough()) as unknown as LooseTicket;
   },
 
-  listAgents: async (departmentId: string, workstationId: string): Promise<LooseAgent[]> =>
-    parseSuccessData(await helldeskFetch(`/api/departments/${departmentId}/workstations/${workstationId}/agents`), LooseAgentSchema.array()),
+  listAgents: async (departmentId: string, workstationId: string): Promise<LooseAgent[]> => {
+    if (!workstationId) return [];
+    return parseSuccessData(await helldeskFetch(`/api/departments/${departmentId}/workstations/${workstationId}/agents`), LooseAgentSchema.array());
+  },
+  listDepartmentAgents: async (departmentId: string): Promise<LooseAgent[]> =>
+    parseSuccessData(await helldeskFetch(`/api/departments/${departmentId}/agents`), LooseAgentSchema.array()),
+  createAgent: async (departmentId: string, workstationId: string, input: { role: string; name: string; identity: string }): Promise<LooseAgent> =>
+    parseSuccessData(
+      await helldeskFetch(`/api/departments/${departmentId}/workstations/${workstationId}/agents`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+      LooseAgentSchema,
+    ),
   deleteAgent: async (departmentId: string, workstationId: string, agentId: string): Promise<void> => {
     await helldeskFetch(`/api/departments/${departmentId}/workstations/${workstationId}/agents/${agentId}`, { method: 'DELETE' });
   },
@@ -272,6 +337,58 @@ export const api = {
     if (options?.limit) qs.set('limit', String(options.limit));
     const q = qs.toString();
     return parseSuccessData(await helldeskFetch(`/api/departments/${departmentId}/events${q ? `?${q}` : ''}`), TaggedTicketEventSchema.array());
+  },
+  // Full observability snapshot from the engine (server-side aggregate over the
+  // complete 24h window). The generic /api/v1/* proxy injects the control-plane
+  // token; the engine response is bare JSON (parseSuccessData accepts that too).
+  getObservability: async (): Promise<ObservabilitySnapshot> =>
+    parseSuccessData(await helldeskFetch('/api/v1/observability'), ObservabilitySnapshotSchema),
+
+  // ── Read-only git commit observability ─────────────────────────────────────
+  listCommitWorkspaces: async (): Promise<CommitWorkspace[]> => {
+    const parsed = await parseSuccessData(
+      await helldeskFetch('/api/v1/commits/workspaces'),
+      z.object({ workspaces: CommitWorkspaceSchema.array() })
+    );
+    return parsed.workspaces;
+  },
+  listCommitProvenance: async (workspaceId: string): Promise<CommitProvenance[]> => {
+    const qs = new URLSearchParams({ workspaceId });
+    const parsed = await parseSuccessData(
+      await helldeskFetch(`/api/v1/commits/provenance?${qs.toString()}`),
+      z.object({ workspaceId: z.string(), commits: CommitProvenanceSchema.array() })
+    );
+    return parsed.commits;
+  },
+  listCommits: async (workspaceId: string, limit = 80): Promise<CommitList> => {
+    const qs = new URLSearchParams({ workspaceId, limit: String(limit) });
+    return parseSuccessData(
+      await helldeskFetch(`/api/v1/commits?${qs.toString()}`),
+      CommitListSchema
+    );
+  },
+  getCommit: async (workspaceId: string, sha: string): Promise<CommitDetail> => {
+    const qs = new URLSearchParams({ workspaceId });
+    const parsed = await parseSuccessData(
+      await helldeskFetch(`/api/v1/commits/${encodeURIComponent(sha)}?${qs.toString()}`),
+      z.object({ commit: CommitDetailSchema })
+    );
+    return parsed.commit;
+  },
+  getCommitFileDiff: async (
+    workspaceId: string,
+    sha: string,
+    path: string,
+    oldPath?: string | null,
+    context = 3
+  ): Promise<CommitFileDiff> => {
+    const qs = new URLSearchParams({ workspaceId, path, context: String(context) });
+    if (oldPath) qs.set('oldPath', oldPath);
+    const parsed = await parseSuccessData(
+      await helldeskFetch(`/api/v1/commits/${encodeURIComponent(sha)}/file?${qs.toString()}`),
+      z.object({ file: CommitFileDiffSchema })
+    );
+    return parsed.file;
   },
   listTicketEvents: async (departmentId: string, workstationId: string, options?: { ticketId?: string; since?: string; limit?: number }): Promise<TicketEvent[]> => {
     const qs = new URLSearchParams();

@@ -3,7 +3,7 @@ import { NafBridge, newHostIdentity, type BridgeHandlers } from './bridge';
 import { createLocalTools } from './tools';
 
 /**
- * CyberLuke Local HELLDESK — thin Kilo plugin adapter over NAI-Lattice NAF.
+ * HELLDESK Local — thin Kilo plugin adapter over NAI-Lattice NAF.
  *
  * This plugin is a THIN EVENT PUBLISHER to the canonical `@cyberluke/nai-lattice-client`
  * NAF/1 client (`nai-fabric-host.exe` singleton). It does NOT:
@@ -104,6 +104,6 @@ function isRealIdle(props: Record<string, any>): boolean {
 }
 
 export default {
-  id: 'cyberluke-local-helldesk',
+  id: 'helldesk-local',
   server: LocalHelldeskPlugin,
 };

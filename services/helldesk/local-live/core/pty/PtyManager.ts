@@ -14,6 +14,7 @@
  *   detach / kill on WS close or process exit
  */
 import { join } from 'node:path';
+import { ScrollbackBuffer } from './scrollback';
 
 export interface PtyCreateOptions {
   cols: number;
@@ -52,6 +53,12 @@ interface PtyHandle {
   proc: PtyProcess;
   /** Last time there was WS I/O on this session (for idle reaping). */
   lastActivity: number;
+  /**
+   * Recent raw output. The PTY prints its banner the moment it spawns (eagerly,
+   * via /frontDesk/ensure), which is BEFORE the browser terminal attaches — so a
+   * late attach must replay this or it opens blank.
+   */
+  scrollback: ScrollbackBuffer;
 }
 
 function now(): number {
@@ -210,7 +217,7 @@ export class PtyManager {
       this.sessions.set(k, { info, proc: {
         pid: 0, write: () => {}, resize: () => {}, kill: () => {},
         onData: () => () => {}, onExit: () => () => {},
-      }, lastActivity: now() });
+      }, lastActivity: now(), scrollback: new ScrollbackBuffer() });
       return info;
     }
 
@@ -224,7 +231,15 @@ export class PtyManager {
       status: 'running',
       createdAt: now(),
     };
-    const handle: PtyHandle = { info, proc, lastActivity: now() };
+    const handle: PtyHandle = { info, proc, lastActivity: now(), scrollback: new ScrollbackBuffer() };
+
+    // Record output from the very first byte (banner + prompt included), even
+    // when no WebSocket has attached yet. This is the replay source, not a
+    // rendering layer: attachOutput ships it verbatim before live data.
+    proc.onData((chunk) => {
+      handle.lastActivity = now();
+      handle.scrollback.push(chunk);
+    });
 
     proc.onExit((_code) => {
       handle.info.status = 'exited';
@@ -303,6 +318,12 @@ export class PtyManager {
         /* socket gone */
       }
     };
+
+    // Replay what already happened (welcome banner, prompt) BEFORE subscribing to
+    // live output. The PTY is spawned eagerly, so a terminal that attaches later
+    // must still open on the same screen a live viewer would have seen.
+    const replay = h.scrollback.snapshot();
+    if (replay.byteLength > 0) send(replay);
 
     const unData = h.proc.onData((chunk) => {
       h.lastActivity = now();

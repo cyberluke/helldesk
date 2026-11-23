@@ -30,7 +30,9 @@ export function useTerminalBar() {
 export function TerminalBarProvider({ children }: { children: ReactNode }) {
   const [tabs, setTabs] = useState<TerminalTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useState(false);
+  // FrontDesk dock starts folded so the page content is not obscured on load.
+  // One click on the chevron (or on a tab) expands it.
+  const [collapsed, setCollapsed] = useState(true);
 
   const openAgentTab = useCallback((agentId: string, agentName: string) => {
     const tabId = `agent:${agentId}`;

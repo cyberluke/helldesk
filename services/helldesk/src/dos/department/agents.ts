@@ -252,7 +252,7 @@ export function hookTicket(sql: SqlStorage, agentId: string, ticketId: string): 
   }
 
   // Triage request tickets are resolved by the triage agent via
-  // gt_triage_resolve, not by hooking. Prevent polecats from
+  // gt_triage_resolve, not by hooking. Prevent souls from
   // accidentally picking these up.
   if (ticket.labels.includes('gt:triage-request')) {
     throw new Error(
@@ -368,7 +368,7 @@ export function getHookedTicket(sql: SqlStorage, agentId: string): Ticket | null
 /**
  * Allocate a unique soul name from the pool.
  * Names are department-global (agents belong to the department, not workstations) so we
- * check all existing polecats across every workstation.
+ * check all existing souls across every workstation.
  */
 export function allocateSoulName(sql: SqlStorage): string {
   const usedNames = new Set(
@@ -399,7 +399,7 @@ export function allocateSoulName(sql: SqlStorage): string {
 /**
  * Find an idle agent of the given role, or create one.
  * For singleton roles (frontDesk), reuse existing.
- * For polecats, create a new one.
+ * For souls, create a new one.
  */
 export function getOrCreateAgent(
   sql: SqlStorage,

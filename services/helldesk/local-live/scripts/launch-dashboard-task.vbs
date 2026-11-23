@@ -1,4 +1,4 @@
-' CyberLuke Local HELLDESK — zero-window scheduled-task launcher for the dashboard.
+' HELLDESK Local — zero-window scheduled-task launcher for the dashboard.
 ' Same detachment as the control-plane launcher: hides the whole chain so nothing
 ' appears on any desktop and Task Scheduler sees it return immediately. Starts
 ' the local-live dashboard (entry.ts) detached via a hidden PowerShell -> bun.

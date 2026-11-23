@@ -16,6 +16,13 @@
  */
 import { assetToken, engineJsonRpc, engineRaw } from '../fabric/engine-client';
 import { z } from 'zod';
+import {
+  mergeReviewControls,
+  normalizeReviewControls,
+  parseReviewControls,
+  validateReviewControls,
+  type ReviewControls,
+} from '../../../local/src/review-controls';
 
 const SpecProjectSchema = z.object({
   name: z.string().trim().min(1).default('spec-project'), repoPath: z.string().default(''),
@@ -149,15 +156,31 @@ export async function handleGetExcellenceGovernor(c: Ctx, params: { departmentId
 }
 
 /**
- * Toggle a Kanban ticket's per-task behavior controls on the fly:
- *   { excellenceGovernor?: boolean, reviewer?: boolean, agents?: boolean,
+ * Toggle a Kanban ticket's per-task behavior controls LIVE:
+ *   { excellenceGovernor?, reviewer?, reviewerA?, reviewerB?, agents?,
  *     review_mode?: 'ReviewThenLand' | 'ReviewAndMerge' }
- * Persists to the primary ticket's metadata.break_room_controls (engine read side
- * gates ExcellenceGovernor governor + reviewer + department-agent dispatch per task).
+ *
+ * Sources of truth:
+ *   - LOCAL ticket  -> department SQLite metadata.break_room_controls
+ *   - mission card  -> local engine autonomy_missions.controls_json (LIVE)
+ *   - canonical NAI engine ticket -> native host gt.project.set_ticket_controls
+ *
+ * The engine validates the MERGED policy: a task may never lose every review
+ * stage (Governor + Reviewer A + Reviewer B would all be off).
  */
+export interface TicketControlsDeps {
+  /** Local department ticket, when the id is one. */
+  getTicket?: (ticketId: string) => Promise<{ metadata?: Record<string, unknown> } | null>;
+  /** Persist the merged controls on the local department ticket. */
+  updateTicketControls?: (ticketId: string, controls: ReviewControls) => Promise<void>;
+  /** Live-apply controls to the local engine mission. */
+  setMissionControls?: (missionId: string, controls: ReviewControls) => Promise<ReviewControls>;
+}
+
 export async function handleSetTicketControls(
   c: Ctx,
-  params: { departmentId: string; ticketId: string }
+  params: { departmentId: string; ticketId: string },
+  deps?: TicketControlsDeps,
 ) {
   let body: Record<string, unknown>;
   try {
@@ -165,21 +188,55 @@ export async function handleSetTicketControls(
   } catch {
     return c.json({ success: false, error: 'invalid JSON body' }, 400);
   }
-  const pick = (k: string): boolean | undefined =>
-    typeof body[k] === 'boolean' ? (body[k] as boolean) : undefined;
-  const args: Record<string, unknown> = { ticket_id: params.ticketId };
-  const inq = pick('excellenceGovernor');
-  const rev = pick('reviewer');
-  const ag = pick('agents');
-  const mode = typeof body['review_mode'] === 'string' ? (body['review_mode'] as string) : undefined;
-  if (inq === undefined && rev === undefined && ag === undefined && mode === undefined) {
-    return c.json({ success: false, error: 'at least one of {excellenceGovernor, reviewer, agents, review_mode} is required' }, 400);
+  const patch = normalizeReviewControls(body);
+  if (Object.keys(patch).length === 0) {
+    return c.json({
+      success: false,
+      error: 'at least one of {excellenceGovernor, reviewer, reviewerA, reviewerB, agents, review_mode} is required',
+    }, 400);
   }
-  if (inq !== undefined) args['excellenceGovernor'] = inq;
-  if (rev !== undefined) args['reviewer'] = rev;
-  if (ag !== undefined) args['agents'] = ag;
-  if (mode !== undefined) args['review_mode'] = mode;
 
+  const local = await deps?.getTicket?.(params.ticketId).catch(() => null) ?? null;
+  const boundMissionId = typeof local?.metadata?.local_mission === 'object' && local.metadata.local_mission
+    ? (local.metadata.local_mission as { missionId?: unknown }).missionId
+    : undefined;
+  const missionId = params.ticketId.startsWith('mis_')
+    ? params.ticketId
+    : typeof boundMissionId === 'string'
+      ? boundMissionId
+      : null;
+
+  // 1. Mission-backed task: the local engine owns the live review pipeline.
+  if (missionId && deps?.setMissionControls) {
+    try {
+      const merged = await deps.setMissionControls(missionId, patch);
+      if (local && deps.updateTicketControls) {
+        await deps.updateTicketControls(params.ticketId, merged).catch(() => undefined);
+      }
+      return c.json({
+        success: true,
+        data: { ticket_id: params.ticketId, mission_id: missionId, break_room_controls: merged },
+      });
+    } catch (err) {
+      return c.json({ success: false, error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+  }
+
+  // 2. Local department task not yet dispatched: persist the policy on the ticket.
+  if (local && deps?.updateTicketControls) {
+    const merged = mergeReviewControls(parseReviewControls(local.metadata?.break_room_controls), patch);
+    const error = validateReviewControls(merged);
+    if (error) return c.json({ success: false, error }, 400);
+    try {
+      await deps.updateTicketControls(params.ticketId, merged);
+      return c.json({ success: true, data: { ticket_id: params.ticketId, break_room_controls: merged } });
+    } catch (err) {
+      return c.json({ success: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  }
+
+  // 3. Canonical NAI engine ticket (not a local mission): native host path.
+  const args: Record<string, unknown> = { ticket_id: params.ticketId, ...patch };
   const res = await engineJsonRpc('gt.project.set_ticket_controls', args);
   if (res['ok'] !== true) {
     return c.json({ success: false, error: res['error'] ?? 'set_ticket_controls failed' }, 500);

@@ -7,7 +7,7 @@ import path from 'node:path'
 // - Serves the STANDALONE React SPA at /helldesk (base - the local Bun runtime
 //   serves ui/dist/index.html for /helldesk, and HashRouter drives internal nav).
 // - `@/components/helldesk/*` and `@/lib/helldesk/*` resolve to the VERBATIM
-//   HELLDESK UI federated from `cyberluke/helldesk`'s cloud source (federated/src).
+//   HELLDESK UI federated from the HELLDESK cloud source (federated/src).
 // - every other `@/*` resolves to the thin LOCAL shim layer (federated/shim)
 //   that maps the original Next.js/tRPC/shadcn surface onto the NAI-Lattice
 //   JSON-RPC + local-live REST runtime: useTRPC, Button, PageContainer,
@@ -16,6 +16,12 @@ import path from 'node:path'
 export default defineConfig({
   base: '/helldesk/',
   plugins: [react()],
+  // metrics.ts returns JSX (`<svg>` sparklines) though it is a `.ts` file; Vite's
+  // default esbuild loader parses `.ts` WITHOUT JSX, so JSX-in-.ts fails to
+  // transform. Tell esbuild to load every `.ts` as TSX too (harmless for plain
+  // `.ts`; required for the ones carrying JSX).
+  // @ts-expect-error esbuild.loader is a user-config key, not part of the public type
+  esbuild: { loader: { '.ts': 'tsx' } },
   resolve: {
     alias: {
       // Verbatim original HELLDESK client pages/components + client data contract.

@@ -2,13 +2,14 @@
 // Fixture is a SEVERE, unambiguous regression (function now returns wrong sum
 // for any non-empty array) so the real reviewers/adjudicator yield FINDINGS.
 import { LocalHelldeskPlugin } from "../plugin/index.ts";
+import { loadConfig } from "../src/config.ts";
 import { mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
 const WS = "C:/Users/LUKES~1.COR/AppData/Local/Temp/kilo/accept-ws2";
-const GT = "http://127.0.0.1:4790";
-const TOKEN = readFileSync("C:/Users/lukes.COREI9/AppData/Local/CyberLuke/LocalGasDepartment/token", "utf-8").trim();
+const GT = process.env.HELLDESK_CONTROL_URL ?? `http://127.0.0.1:${loadConfig().daemon.port}`;
+const TOKEN = readFileSync("C:/Users/lukes.COREI9/AppData/Local/HELLDESK/LocalDepartment/token", "utf-8").trim();
 const j = (a, b) => a.replace(/\\/g, "/").replace(/\/$/, "") + "/" + b;
 
 async function main() {
@@ -28,7 +29,7 @@ async function main() {
   console.log("[accept] plugin activated");
 
   const sid = "accept2-session";
-  await p["chat.message"]?.({ sessionID: sid, model: { providerID: "litellm-edge", modelID: "differential_sseproxy" } } as any);
+  await p["chat.message"]?.({ sessionID: sid, model: { providerID: "openai-compatible", modelID: "demo-model" } } as any);
   await p["event"]?.({ event: { type: "file.edited", properties: { sessionID: sid, file: "sum.js" } } } as any);
   await p["event"]?.({ event: { type: "session.idle", properties: { sessionID: sid, status: "idle" } } } as any);
   console.log("[accept] task events fired; waiting for auto-enqueue...");
@@ -51,7 +52,7 @@ async function main() {
   }
   console.log("[accept] final:", state);
   if (!String(state).startsWith("COMPLETED_FINDINGS")) { console.log("[accept] GATE NOT MET (final="+state+")"); process.exit(3); }
-  const repPath = join("C:/Users/lukes.COREI9/AppData/Local/CyberLuke/LocalGasDepartment/reports", jobId + ".json");
+  const repPath = join("C:/Users/lukes.COREI9/AppData/Local/HELLDESK/LocalDepartment/reports", jobId + ".json");
   const rep = existsSync(repPath) ? JSON.parse(readFileSync(repPath, "utf-8")) : null;
   console.log("[accept] REPORT result=", rep?.result, "findings=", rep?.findings?.length);
   (rep?.findings || []).slice(0,5).forEach((f) => console.log(`[accept]  - [${f.severity}/${f.confidence}] ${f.title}`));

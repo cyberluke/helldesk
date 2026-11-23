@@ -1,48 +1,47 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Copy, FolderGit2, ShieldCheck, Bot, Scale, Sparkles,
+  Copy, FolderGit2, Sparkles,
   ArrowRight, LoaderCircle, Check, Layers, FileText,
 } from '@/lib/icons'
-import { useParams } from 'react-router-dom'
-import { local, readOperatorRoom, setDepartmentLocalRepo, createTask as createTaskLocal, type Enforcer, type SourceRepoInput, type RoomState } from '../lib/engine'
+import { Link, useParams } from 'react-router-dom'
+import {
+  readOperatorRoom, setDepartmentLocalRepo, createTask as createTaskLocal, enhanceTaskSpec,
+  type Delivery, type EnhancedSpec, type EnhanceMode, type EnhanceResult, type Enforcer,
+  type SourceRepoInput, type RoomState, type TaskType, type WriteTarget,
+} from '../lib/engine'
+import TaskShapeMatrix from './TaskShapeMatrix'
+import EnhancePreview from './EnhancePreview'
 
 // TaskStudio — the modern HITL launchpad for the local tier.
 // One coherent surface to:
 //   1. configure the two-repo transform (destination repo + read-only SOURCE repo),
 //   2. write the task spec, and
-//   3. pick WHICH enforcer enforces it (ExcellenceGovernor / Polecats / Reviewer).
+//   3. pick WHICH enforcer enforces it (ExcellenceGovernor / Souls / Reviewer).
 // The enforcer picker writes metadata.break_room_controls, and the task + spec +
 // enforcer land in ONE create call. Style matches the HELLDESK glass theme.
 
 interface RepoRow { id: string; path: string; label?: string; branch?: string }
 
-const ENFORCERS: Array<{
-  key: Enforcer
-  name: string
-  desc: string
-  icon: typeof ShieldCheck
-  accent: string
-  chip: string
-}> = [
+const ENFORCER_INFO: Array<{ key: Enforcer; name: string; desc: string }> = [
   {
-    key: 'auto', name: 'Department policy', icon: Sparkles, accent: 'var(--muted)',
+    key: 'auto', name: 'Department policy',
     desc: 'No override — the task runs under the department/workstation default colony behavior. Pick this to keep it simple.',
-    chip: 'default',
   },
   {
-    key: 'excellenceGovernor', name: 'Build + ExcellenceGovernor', icon: ShieldCheck, accent: 'var(--accent)',
-    desc: 'Implementers keep building. ExcellenceGovernor challenges the work and sends findings back for correction. You steer asynchronously and retain final acceptance.',
-    chip: 'build · challenge · refine',
+    key: 'excellenceGovernor', name: 'Build + ExcellenceGovernor',
+    desc: 'Implementers keep building. The ExcellenceGovernor independently reviews each revision and sends findings back for correction. Reviewer A/B stay OFF unless you enable them per task in Kanban.',
   },
   {
-    key: 'soul', name: 'HELLDESK Polecats', icon: Bot, accent: 'var(--accent3)',
+    key: 'soul', name: 'HELLDESK Souls',
     desc: 'The colony dispatches soul/qualityAssurance agents to implement the ticket against the local repo.',
-    chip: 'implement + land',
   },
   {
-    key: 'reviewer', name: 'HELLDESK Reviewer', icon: Scale, accent: 'var(--accent2)',
-    desc: 'The reviewer process verifies the produced work with grounded, provenanced evidence.',
-    chip: 'review + verify',
+    key: 'reviewer', name: 'HELLDESK Reviewer',
+    desc: 'Independent Reviewer A + Reviewer B verify the produced work with grounded, provenanced evidence. Governor adjudication stays off unless enabled per task.',
+  },
+  {
+    key: 'reviewerAndGovernor', name: 'Reviewer A/B + Governor',
+    desc: 'Reviewer A + Reviewer B verify the work and the ExcellenceGovernor adjudicates each revision before it lands — the full independent review stack.',
   },
 ]
 
@@ -71,12 +70,28 @@ export default function TaskStudio() {
   const [dependsOn, setDependsOn] = useState<string[]>([])
   const [tasks, setTasks] = useState<RoomState['tickets']>([])
   const [dependencyError, setDependencyError] = useState('')
-  const [reviewMode, setReviewMode] = useState<'ReviewThenLand' | 'ReviewAndMerge'>('ReviewThenLand')
+  const [reviewMode, setReviewMode] = useState<'inherit' | 'ReviewThenLand' | 'ReviewAndMerge'>('inherit')
   const [engineOvers, setEngineOvers] = useState<{ engine: string; providerID?: string; modelID?: string; baseURL?: string }>({ engine: '' })
   const [taskBusy, setTaskBusy] = useState(false)
   const [taskMsg, setTaskMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [createdTicketId, setCreatedTicketId] = useState('')
+  // Synchronous guard: `taskBusy` only disables the button after a re-render, so
+  // two clicks in the same tick could submit twice without this latch.
+  const createLock = useRef(false)
+
+  // ── task shape (matrix) + prompt enhancer ──
+  const [taskType, setTaskType] = useState<TaskType>('engine')
+  const [writeTarget, setWriteTarget] = useState<WriteTarget>('workspace')
+  const [delivery, setDelivery] = useState<Delivery>('startup')
+  const [taskTypeTouched, setTaskTypeTouched] = useState(false)
+  const [writeTargetTouched, setWriteTargetTouched] = useState(false)
+  const [enhanceMode, setEnhanceMode] = useState<EnhanceMode>('text')
+  const [enhanceBusy, setEnhanceBusy] = useState<EnhanceMode | null>(null)
+  const [enhanceResult, setEnhanceResult] = useState<EnhanceResult | null>(null)
+  const [enhanceError, setEnhanceError] = useState<string | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
   useEffect(() => {
-    if (!workstationId && workstations.length) setWorkstationId(workstations[0])
+    if (!workstationId && workstations.length) setWorkstationId(workstations[0].id)
   }, [workstations, workstationId])
   useEffect(() => {
     let active = true
@@ -91,29 +106,93 @@ export default function TaskStudio() {
     return () => { active = false; clearInterval(timer) }
   }, [departmentId])
 
-  // Load existing department repo config once.
+  // Do NOT prefill repository routing from the department config: the operator's
+  // filesystem paths must not appear on load (or leak in screenshots). The form
+  // starts empty; typing a path and Save repos is an explicit action, and the
+  // "wired" confirmation only appears for routing saved in this session.
+
+  const outputRepoAvailable = outputRepo.trim().length > 0
+
+  // Derive task-shape defaults until the operator takes over a row.
+  // Output routed → extraction into the output repo; bug language → bugfix;
+  // otherwise the studio defaults to an engine task. Delivery starts at startup.
+  // A touched row is never overwritten by inference again; clearing the output
+  // repo always returns the write target to the workspace because the other
+  // cell is disabled.
   useEffect(() => {
-    let alive = true
-    const load = async () => {
-      const cfg = await local.departmentConfig(departmentId)
-      if (!alive) return
-      const lr = cfg?.data?.local_repo ?? cfg?.local_repo
-      if (lr) {
-        setWorkspace(lr.repo_path ?? '')
-        setOutputRepo(lr.output_repo?.repo_path ?? '')
-        setOutputReady(lr.output_repo?.init_if_missing ?? true)
-        setSources(lr.source_repos ?? [])
-        setSavedCfg({
-          ws: lr.repo_path,
-          output: lr.output_repo?.repo_path,
-          outputReady: lr.output_repo?.init_if_missing ?? true,
-          sources: lr.source_repos ?? [],
-        })
-      }
+    const hasOutput = outputRepo.trim().length > 0
+    const inferred: TaskType = hasOutput
+      ? 'extraction'
+      : /fix|bug|crash|error/i.test(`${title}\n${spec}`) ? 'bugfix' : 'engine'
+    const resolvedType = taskTypeTouched ? taskType : inferred
+    if (!taskTypeTouched) setTaskType(inferred)
+    if (!hasOutput) { setWriteTarget('workspace'); return }
+    if (!writeTargetTouched) setWriteTarget(resolvedType === 'extraction' ? 'output_repo' : 'workspace')
+  }, [outputRepo, title, spec, taskType, taskTypeTouched, writeTargetTouched])
+
+  const runEnhance = async (mode: EnhanceMode, qaFindings?: string[]) => {
+    const routedSources = sources
+      .map((source) => ({ ...source, id: source.id.trim(), path: source.path.trim() }))
+      .filter((source) => source.id && source.path)
+    setEnhanceMode(mode)
+    setEnhanceBusy(mode)
+    setEnhanceError(null)
+    setEnhanceResult(null)
+    setPreviewOpen(true)
+    if (!workspace.trim()) {
+      setEnhanceBusy(null)
+      setEnhanceError('Project workspace is required before analysis.')
+      return
     }
-    load()
-    return () => { alive = false }
-  }, [departmentId])
+    // Analyze profiles the routed repos, so persist the visible routing first.
+    // Saving creates/initialises a new workspace (input = output when no output
+    // repo is set); this prevents the enhancer CLI from running on an
+    // uninitialised directory and hanging.
+    const routing = await setDepartmentLocalRepo(departmentId, {
+      repoPath: workspace.trim(),
+      sourceRepos: routedSources,
+      ...(outputRepo.trim() ? {
+        outputRepo: { repo_path: outputRepo.trim(), init_if_missing: outputReady },
+      } : {}),
+    })
+    if (routing?.success !== true) {
+      setEnhanceBusy(null)
+      setEnhanceError(routing?.error || 'Repository routing could not be saved. Analyze was not started.')
+      return
+    }
+    setSavedCfg({ ws: workspace.trim(), output: outputRepo.trim() || undefined, outputReady, sources: routedSources })
+    const result = await enhanceTaskSpec({
+      mode,
+      title: title.trim(),
+      spec: spec.trim(),
+      workspace: workspace.trim(),
+      outputRepo: outputRepo.trim() || undefined,
+      writeTarget: outputRepo.trim() ? writeTarget : 'workspace',
+        taskType,
+        delivery,
+        sources: routedSources,
+        qaFindings,
+      })
+    setEnhanceBusy(null)
+    setEnhanceResult(result)
+    if (!result.ok || !result.enhanced) {
+      setEnhanceError(result.error ?? `Enhancer failed (HTTP ${result.status}).`)
+    }
+  }
+
+  // Apply only on explicit operator action; never auto-applies and never creates.
+  const applyEnhancement = (enhanced: EnhancedSpec) => {
+    setSpec(enhanced.spec)
+    if (!title.trim() && enhanced.title) setTitle(enhanced.title)
+    if (enhanced.taskType) { setTaskType(enhanced.taskType); setTaskTypeTouched(true) }
+    if (enhanced.writeTarget === 'workspace') {
+      setWriteTarget('workspace'); setWriteTargetTouched(true)
+    } else if (enhanced.writeTarget === 'output_repo' && outputRepo.trim()) {
+      setWriteTarget('output_repo'); setWriteTargetTouched(true)
+    }
+    if (enhanced.delivery) setDelivery(enhanced.delivery)
+    setPreviewOpen(false)
+  }
 
   const saveRepos = async () => {
     if (!workspace.trim()) return
@@ -133,36 +212,64 @@ export default function TaskStudio() {
   }
 
   const createTask = async () => {
+    if (createLock.current) return
     if (!workstationId || !workspace.trim() || !title.trim() || !spec.trim()) return
-    setTaskBusy(true); setTaskMsg(null)
-    // Launch uses the routing visible in this form, never a stale saved target.
-    if (workspace.trim()) {
-      const routing = await setDepartmentLocalRepo(departmentId, {
-        repoPath: workspace.trim(),
-        sourceRepos: sources.filter(source => source.id && source.path.trim()),
-        ...(outputRepo.trim() ? { outputRepo: { repo_path: outputRepo.trim(), init_if_missing: outputReady } } : {}),
+    createLock.current = true
+    setTaskBusy(true); setTaskMsg(null); setCreatedTicketId('')
+    try {
+      // Launch uses the routing visible in this form, never a stale saved target.
+      if (workspace.trim()) {
+        const routing = await setDepartmentLocalRepo(departmentId, {
+          repoPath: workspace.trim(),
+          sourceRepos: sources.filter(source => source.id && source.path.trim()),
+          ...(outputRepo.trim() ? { outputRepo: { repo_path: outputRepo.trim(), init_if_missing: outputReady } } : {}),
+        })
+        if (routing?.success !== true) {
+          setTaskMsg({ ok: false, text: routing?.error || 'Repository routing could not be saved. No task was created.' })
+          return
+        }
+      }
+      const submittedEnforcer = enforcer
+      const prerequisiteCount = dependsOn.length
+      const res = await createTaskLocal(departmentId, workstationId, {
+        title: title.trim() || 'Untitled task',
+        spec: spec.trim(),
+        enforcer,
+        review_mode: reviewMode === 'inherit' ? undefined : reviewMode,
+        depends_on: dependsOn,
+        engineMatrix: engineOvers.engine ? { mutation: engineOvers } : undefined,
       })
-      if (routing?.success !== true) {
-        setTaskBusy(false)
-        setTaskMsg({ ok: false, text: routing?.error || 'Repository routing could not be saved. No task was created.' })
+      if (res?.success !== true) {
+        setTaskMsg({ ok: false, text: `Could not create task: ${res?.error ?? 'unknown'}` })
         return
       }
+      const created = (res.data ?? {}) as { ticket_id?: string; ticketId?: string }
+      const createdId = created.ticket_id ?? created.ticketId ?? ''
+      setCreatedTicketId(createdId)
+      // Reset the NEW-TASK form immediately: the button becomes disabled again
+      // (empty title/spec), so a second click cannot duplicate the task. The
+      // repository routing stays visible for the next task in the same workspace.
+      setTitle('')
+      setSpec('')
+      setDependsOn([])
+      setTaskType('engine'); setTaskTypeTouched(false)
+      setWriteTarget('workspace'); setWriteTargetTouched(false)
+      setDelivery('startup')
+      setEnforcer('excellenceGovernor')
+      setReviewMode('inherit')
+      setEngineOvers({ engine: '' })
+      setEnhanceMode('text')
+      setEnhanceResult(null)
+      setEnhanceError(null)
+      setPreviewOpen(false)
+      setTaskMsg({
+        ok: true,
+        text: `Task created${createdId ? ` (${createdId.slice(0, 8)})` : ''}${prerequisiteCount ? ` after ${prerequisiteCount} prerequisite${prerequisiteCount > 1 ? 's' : ''}` : ''}. ${enforcerLabel(submittedEnforcer)} is assigned; steer from the Operator-console.`,
+      })
+    } finally {
+      setTaskBusy(false)
+      createLock.current = false
     }
-    const res = await createTaskLocal(departmentId, workstationId, {
-      title: title.trim() || 'Untitled task',
-      spec: spec.trim(),
-      enforcer,
-      review_mode: reviewMode,
-      depends_on: dependsOn,
-      engineMatrix: engineOvers.engine ? { mutation: engineOvers } : undefined,
-    })
-    setTaskBusy(false)
-    setTaskMsg({
-      ok: res?.success === true,
-      text: res?.success !== true
-        ? `Could not create task: ${res?.error ?? 'unknown'}`
-        : `Task created${dependsOn.length ? ` after ${dependsOn.length} prerequisite${dependsOn.length > 1 ? 's' : ''}` : ''}. ${enforcerLabel(enforcer)} is assigned; steer from the Operator-console.`,
-    })
   }
 
   const srcStats = useMemo(() => {
@@ -170,7 +277,7 @@ export default function TaskStudio() {
     return { count: s.length, sum: s.map((x) => x.id).join(', ') }
   }, [savedCfg])
 
-  const selected = ENFORCERS.find((e) => e.key === enforcer)!
+  const selected = ENFORCER_INFO.find((e) => e.key === enforcer)!
 
   return (
     <div className="operator-page">
@@ -209,6 +316,10 @@ export default function TaskStudio() {
               Save repos
             </button>
           </div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+            A plain directory is auto-initialised as a git repo. Leave Output repo empty to work in it
+            directly — input = output.
+          </div>
           {repoMsg && (
             <div className={'ts-toast ' + (repoMsg.ok ? 'ts-ok' : 'ts-bad')} style={{ marginTop: 10 }}>
               {repoMsg.text}
@@ -216,7 +327,7 @@ export default function TaskStudio() {
           )}
 
           <div className="ts-divider" />
-          <label className="ts-label">Output repo <span className="ts-opt-note">(cross-repo deltas — new or existing, optional)</span></label>
+          <label className="ts-label">Output repo <span className="ts-opt-note">(optional — leave empty for input = output)</span></label>
           <div className="ts-field">
             <input
               className="ts-input mono"
@@ -289,8 +400,40 @@ export default function TaskStudio() {
           <label className="ts-label" style={{ marginTop: 14 }} htmlFor="task-workstation">Execution workstation</label>
           <select id="task-workstation" className="ts-input" value={workstationId} onChange={e => setWorkstationId(e.target.value)}>
             {!workstations.length && <option value="">Create a workstation before launching work</option>}
-            {workstations.map(id => <option key={id} value={id}>{id}</option>)}
+            {workstations.map(workstation => <option key={workstation.id} value={workstation.id}>{workstation.name}</option>)}
           </select>
+
+          <div className="ts-divider" style={{ margin: '16px 0 14px' }} />
+          <label className="ts-label">Task shape</label>
+          <div className="ts-hint" style={{ fontSize: 12, margin: '0 0 10px' }}>
+            Shape the work before you write the spec. The AI row rewrites or analyzes the spec from this shape and the routed repos — nothing is applied until you accept it.
+          </div>
+          <TaskShapeMatrix
+            taskType={taskType}
+            writeTarget={outputRepoAvailable ? writeTarget : 'workspace'}
+            delivery={delivery}
+            enforcer={enforcer}
+            outputRepoAvailable={outputRepoAvailable}
+            enhanceBusy={enhanceBusy}
+            onEnhance={(mode) => { void runEnhance(mode) }}
+            onTaskType={(type) => { setTaskType(type); setTaskTypeTouched(true) }}
+            onWriteTarget={(target) => { setWriteTarget(target); setWriteTargetTouched(true) }}
+            onDelivery={setDelivery}
+            onEnforcer={setEnforcer}
+          />
+          <div className="ts-hint" style={{ fontSize: 12, marginTop: 8 }}>— {selected.desc}</div>
+
+          {enforcer !== 'soul' && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 12 }}>
+              <label className="ts-label" style={{ margin: 0 }}>Review mode</label>
+              <button className={'ts-mode' + (reviewMode === 'inherit' ? ' on' : '')}
+                onClick={() => setReviewMode('inherit')}>Department default</button>
+              <button className={'ts-mode' + (reviewMode === 'ReviewThenLand' ? ' on' : '')}
+                onClick={() => setReviewMode('ReviewThenLand')}>Review then land</button>
+              <button className={'ts-mode' + (reviewMode === 'ReviewAndMerge' ? ' on' : '')}
+                onClick={() => setReviewMode('ReviewAndMerge')}>Review & auto-merge</button>
+            </div>
+          )}
 
           <label className="ts-label" style={{ marginTop: 14 }}>Spec</label>
           <textarea className="ts-input ts-area" value={spec}
@@ -311,38 +454,6 @@ export default function TaskStudio() {
             </div>
           </fieldset>
 
-          <div className="ts-divider" style={{ margin: '16px 0 14px' }} />
-          <label className="ts-label">Enforcer <span className="ts-opt-note">(optional)</span></label>
-          <div className="ts-picker">
-            {ENFORCERS.map((e) => {
-              const Icon = e.icon
-              const on = enforcer === e.key
-              return (
-                <button key={e.key} className={'ts-enforcer' + (on ? ' on' : '')}
-                  style={on ? { borderColor: e.accent, boxShadow: `0 0 0 1px ${e.accent}, 0 8px 26px -10px ${e.accent}55` } : undefined}
-                  onClick={() => setEnforcer(e.key)}>
-                  <Icon size={16} style={{ color: on ? e.accent : 'var(--muted)' }} />
-                  <div className="ts-enforcer-name">{e.name}</div>
-                  <div className="ts-enforcer-chip" style={{ color: on ? e.accent : 'var(--muted)' }}>{e.chip}</div>
-                </button>
-              )
-            })}
-          </div>
-          <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>— {selected.desc}</div>
-
-          {enforcer !== 'soul' && (
-            <div className="ts-divider" style={{ margin: '14px 0 12px' }} />
-          )}
-          {enforcer !== 'soul' && (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <label className="ts-label" style={{ margin: 0 }}>Review mode</label>
-              <button className={'ts-mode' + (reviewMode === 'ReviewThenLand' ? ' on' : '')}
-                onClick={() => setReviewMode('ReviewThenLand')}>Review then land</button>
-              <button className={'ts-mode' + (reviewMode === 'ReviewAndMerge' ? ' on' : '')}
-                onClick={() => setReviewMode('ReviewAndMerge')}>Review & auto-merge</button>
-            </div>
-          )}
-
           <div className="ts-divider" style={{ margin: '14px 0 12px' }} />
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <label className="ts-label" style={{ margin: 0 }}>Mutation engine <span className="ts-opt-note">(per-task override)</span></label>
@@ -353,7 +464,7 @@ export default function TaskStudio() {
               <option value="openai">openai</option>
             </select>
             {engineOvers.engine && (
-              <input className="ts-mode" value={engineOvers.modelID ?? ''} onChange={e => setEngineOvers(o => ({ ...o, modelID: e.target.value }))} placeholder="model (e.g. differential_sseproxy / gpt-6-luna)" style={{ minWidth: 220, background: 'transparent', color: 'var(--text2)', padding: '4px 8px', borderRadius: 8, border: '1px solid var(--line)' }} />
+              <input className="ts-mode" value={engineOvers.modelID ?? ''} onChange={e => setEngineOvers(o => ({ ...o, modelID: e.target.value }))} placeholder="model (empty = inherit Kilo model)" style={{ minWidth: 220, background: 'transparent', color: 'var(--text2)', padding: '4px 8px', borderRadius: 8, border: '1px solid var(--line)' }} />
             )}
           </div>
 
@@ -368,10 +479,30 @@ export default function TaskStudio() {
           {taskMsg && (
             <div className={'ts-toast ' + (taskMsg.ok ? 'ts-ok' : 'ts-bad')} style={{ marginTop: 12 }}>
               <span role="status">{taskMsg.text}</span>
+              {taskMsg.ok && createdTicketId && (
+                <Link
+                  to={`/helldesk/${departmentId}/tickets`}
+                  style={{ marginLeft: 10, color: 'inherit', textDecoration: 'underline', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                >
+                  Open Kanban <ArrowRight size={13} />
+                </Link>
+              )}
             </div>
           )}
         </section>
       </div>
+
+      <EnhancePreview
+        open={previewOpen}
+        loading={enhanceBusy !== null}
+        error={enhanceError}
+        result={enhanceResult}
+        mode={enhanceMode}
+        shape={{ taskType, writeTarget: outputRepoAvailable ? writeTarget : 'workspace', delivery, enforcer }}
+        onUse={applyEnhancement}
+        onRegenerate={(qaFindings) => { void runEnhance(enhanceMode, qaFindings) }}
+        onCancel={() => setPreviewOpen(false)}
+      />
 
       <style>{TS_CSS}</style>
     </div>
@@ -379,13 +510,26 @@ export default function TaskStudio() {
 }
 
 /* fetch workstations to pick a target workstation for the task */
-function useWorkstations(): string[] {
+function useWorkstations(): Array<{ id: string; name: string }> {
   const { departmentId = '' } = useParams()
-  const [workstations, setWorkstations] = useState<string[]>([])
+  const [workstations, setWorkstations] = useState<Array<{ id: string; name: string }>>([])
   useEffect(() => {
     let alive = true
     const load = async () => {
-      try { const room = await readOperatorRoom(departmentId); if (alive) setWorkstations(room.workstations.map(workstation => workstation.id || workstation.workstation_id || '').filter(Boolean)) } catch { /* room error is displayed by dependency loading */ }
+      try {
+        const room = await readOperatorRoom(departmentId)
+        if (alive) {
+          // Display the operator-facing NAME; the id stays the option value.
+          setWorkstations(
+            room.workstations
+              .map(workstation => {
+                const id = workstation.id || workstation.workstation_id || ''
+                return { id, name: workstation.name || id }
+              })
+              .filter(workstation => workstation.id),
+          )
+        }
+      } catch { /* room error is displayed by dependency loading */ }
     }
     load()
     const timer = setInterval(load, 10000)
@@ -395,7 +539,7 @@ function useWorkstations(): string[] {
 }
 
 function enforcerLabel(e: Enforcer): string {
-  return ENFORCERS.find((x) => x.key === e)?.name ?? e
+  return ENFORCER_INFO.find((x) => x.key === e)?.name ?? e
 }
 
 const TS_CSS = `
@@ -406,7 +550,8 @@ const TS_CSS = `
   padding: 18px 20px 20px; backdrop-filter: blur(12px); box-shadow: var(--shadow);
 }
 .ts-card-h { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; margin-bottom: 8px; }
-.ts-label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 6px; font-weight: 600; }
+.ts-label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #b9c6dd; margin: 0 0 6px; font-weight: 600; }
+.ts-hint { color: #aebbd2; }
 .ts-input {
   background: var(--bg2); border: 1px solid var(--line); color: var(--fg); border-radius: 9px;
   padding: 9px 11px; font-size: 13px; outline: none; transition: 0.14s;
@@ -430,16 +575,51 @@ const TS_CSS = `
 .ts-bad { background: rgba(248,113,113,0.12); border: 1px solid rgba(248,113,113,0.28); color: var(--bad); }
 .ts-wired { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--bg2); display: grid; gap: 3px; }
 .ts-wired-h { display: flex; align-items: center; gap: 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); font-weight: 700; }
-.ts-picker { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
-@media (max-width: 860px) { .ts-picker { grid-template-columns: repeat(2, 1fr); } }
-.ts-enforcer {
-  display: grid; gap: 7px; justify-items: start; text-align: left; padding: 13px 14px; cursor: pointer;
-  background: var(--bg2); border: 1px solid var(--line); border-radius: 12px; color: var(--fg); transition: 0.16s;
+.ts-shape-wrap { display: grid; gap: 8px; }
+.ts-matrix { display: grid; gap: 8px; }
+.ts-matrix-row { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 8px; align-items: start; }
+.ts-matrix-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 8px; min-width: 0; }
+.ts-matrix-chip {
+  align-self: start; display: inline-flex; align-items: center; gap: 6px; min-width: 0;
+  padding: 7px 9px; background: var(--bg2); border: 1px solid var(--line); border-radius: 9px;
+  color: #c7d2e5; font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
 }
-.ts-enforcer:hover { border-color: var(--fg); }
-.ts-enforcer.on { background: rgba(110,231,183,0.05); }
-.ts-enforcer-name { font-weight: 600; font-size: 13px; }
-.ts-enforcer-chip { font-size: 11px; }
+.ts-matrix-chip svg { flex: none; }
+.ts-shape {
+  display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; min-height: 34px; padding: 7px 9px;
+  background: var(--bg2); border: 1px solid var(--line); border-radius: 9px; color: #c7d2e5;
+  font-size: 11.5px; font-weight: 600; text-align: left; cursor: pointer; transition: 0.14s;
+}
+.ts-shape svg { flex: none; }
+.ts-shape:hover:not(:disabled) { border-color: var(--fg); color: var(--fg); }
+.ts-shape.on { color: var(--accent); border-color: var(--accent); background: rgba(110, 231, 183, 0.1); }
+.ts-shape:disabled { opacity: 0.42; cursor: not-allowed; }
+.ts-shape:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ts-shape-action { border-style: dashed; }
+.ts-shape-slot { display: flex; min-width: 0; }
+.ts-shape-slot .ts-shape { width: 100%; pointer-events: none; }
+.ts-shape-label { min-width: 0; overflow: visible; text-overflow: clip; white-space: normal; line-height: 1.25; }
+.ts-legend-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ts-legend-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; color: #c7d2e5; }
+.ts-legend-toggle svg { flex: none; }
+.ts-legend-hint { font-size: 11px; color: #aebbd2; }
+.ts-legend {
+  border: 1px solid var(--line); border-radius: 11px; background: var(--bg2);
+  padding: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px;
+}
+.ts-legend-group { display: grid; gap: 7px; align-content: start; }
+.ts-legend-group h5 { margin: 0 0 2px; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #c7d2e5; }
+.ts-legend-item { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; line-height: 1.4; }
+.ts-legend-item > svg { flex: none; color: var(--muted); margin-top: 2px; }
+.ts-legend-item strong { display: block; font-weight: 600; color: var(--fg); }
+.ts-legend-item span { color: #aebbd2; }
+.ts-legend-note { grid-column: 1 / -1; margin: 0; padding-top: 10px; border-top: 1px solid var(--line); font-size: 11.5px; color: #aebbd2; line-height: 1.45; }
+.ts-legend-note strong { color: var(--fg); }
+@media (max-width: 760px) {
+  .ts-matrix-row { grid-template-columns: 1fr; }
+  .ts-matrix-chip { justify-self: start; }
+  .ts-legend { grid-template-columns: 1fr; }
+}
 .ts-divider { height: 1px; background: linear-gradient(90deg, transparent, var(--line), transparent); }
 .ts-optional {
   font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
@@ -447,7 +627,7 @@ const TS_CSS = `
   margin-left: 6px; vertical-align: 1px;
 }
 .ts-opt-note { font-size: 10px; text-transform: none; letter-spacing: 0; color: var(--muted); font-weight: 500; }
-.ts-mode { background: var(--bg2); border: 1px solid var(--line); color: var(--muted); border-radius: 999px; padding: 6px 13px; font-size: 12px; cursor: pointer; transition: 0.14s; }
+.ts-mode { background: var(--bg2); border: 1px solid var(--line); color: #c7d2e5; border-radius: 999px; padding: 6px 13px; font-size: 12px; cursor: pointer; transition: 0.14s; }
 .ts-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; white-space: nowrap; padding: 0 4px; }
 .ts-check input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
 .ts-mode.on { color: var(--accent); border-color: var(--accent); background: rgba(110,231,183,0.1); }
