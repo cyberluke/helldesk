@@ -14,7 +14,7 @@ import {
   listGateExecutions,
   type GateCommandSpec,
 } from '../../src/mission-repository';
-import { runGateExecutions } from '../../src/gate-runner';
+import { runGateExecutions, workspaceTreeIdentity } from '../../src/gate-runner';
 import { captureMissionBaseline } from '../../src/mission-baseline';
 
 /**
@@ -355,4 +355,40 @@ describe('gate-runner — isolation and provenance', () => {
     expect(await waitForDead(pid)).toBe(true);
     expect(latestGateExecution(ctx.h.d, ctx.revisionId, 'functional_correctness')?.status).toBe('TIMEOUT');
   }, 45_000);
+});
+
+describe('gate-runner — candidate identity (evidence-drift guard)', () => {
+  it('binds the EXACT working-tree content and changes when a writer edits it', () => {
+    const ctx = setup(baseFiles);
+    const clean = workspaceTreeIdentity(ctx.workspace);
+    expect(clean.ok).toBe(true);
+    expect(clean.hash).toBe(git(ctx.workspace, 'git show -s --format=%T HEAD'));
+    expect(workspaceTreeIdentity(ctx.workspace).hash).toBe(clean.hash);
+
+    // A writer that edits after the gates ran moves the identity: this is the
+    // M6 evidence-drift defect the controller must fail closed on.
+    writeFileSync(join(ctx.workspace, 'src', 'counter.mjs'), 'export function increment(n) { return n + 2; }\n', 'utf8');
+    const dirty = workspaceTreeIdentity(ctx.workspace);
+    expect(dirty.ok).toBe(true);
+    expect(dirty.hash).not.toBe(clean.hash);
+
+    // .gitignore'd content is NOT part of the candidate identity.
+    writeFileSync(join(ctx.workspace, '.gitignore'), 'node_modules/\n', 'utf8');
+    git(ctx.workspace, 'git add .gitignore && git commit -qm ignore');
+    const beforeIgnored = workspaceTreeIdentity(ctx.workspace).hash;
+    mkdirSync(join(ctx.workspace, 'node_modules'), { recursive: true });
+    writeFileSync(join(ctx.workspace, 'node_modules', 'x.js'), 'ignored', 'utf8');
+    const ignored = workspaceTreeIdentity(ctx.workspace);
+    expect(ignored.reason ?? 'ok').toBe('ok');
+    expect(ignored.hash).toBe(beforeIgnored);
+  }, 20_000);
+
+  it('reports not-a-git-worktree instead of inventing an identity', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gt-gate-nogit-'));
+    cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+    const identity = workspaceTreeIdentity(dir);
+    expect(identity.ok).toBe(false);
+    expect(identity.hash).toBeNull();
+    expect(identity.reason).toBe('not-a-git-worktree');
+  });
 });

@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Db } from '../../src/db';
-import { makeTestDb } from '../helpers';
+import { makeGitFixture, makeTestDb } from '../helpers';
 import {
   createMission, addTicket, getMission, updateTicket, createRevision, getRevision,
   setQualityGate, getQualityGates, isRevisionVerified10, addEvidence, upsertClaim,
@@ -441,4 +442,74 @@ describe('GATE 8 — anti-loop: identical failure + unchanged workspace forbids 
       expect(all.length).toBeGreaterThan(5); // at least one further revision
     } finally { h.close(); }
   });
+});
+describe('M6 — evidence drift: no certification of a tree the gates did not execute', () => {
+  it('requeues when a writer mutates during review, then certifies only after the gates re-run on the new tree', async () => {
+    const h = makeTestDb();
+    try {
+      const g = makeGitFixture({ commits: [
+        { msg: 'base', files: { 'src/x.ts': 'export const x = 1;\n' } },
+        { msg: 'second', files: { 'README.md': '# fixture\n' } },
+      ] });
+      const gitTree = execSync('git show -s --format=%T HEAD', { cwd: g.dir, encoding: 'utf8' }).trim();
+      const baseline = {
+        version: 1 as const,
+        capturedAt: new Date().toISOString(),
+        gitCommit: g.head,
+        gitTree,
+        protectedPaths: [],
+        allowProtectedPaths: [],
+        protectedFiles: [],
+      };
+      const m = createMission(h.d, {
+        workspace_id: 'ws_drift',
+        objective: 'evidence drift',
+        gateCommands: { provenance: { command: 'bun --version', timeoutMs: 30_000 } },
+        baseline,
+      });
+      const t = addTicket(h.d, m.mission_id, { title: 'T', objective: 'evidence drift' });
+      let reviews = 0;
+      const review: ControllerDeps['review'] = async ({ revisionId }) => {
+        reviews += 1;
+        // First review: a rogue writer (e.g. a mutation session that did not
+        // stop) edits the workspace AFTER the gates executed the candidate.
+        if (reviews === 1) writeFileSync(join(g.dir, 'src', 'x.ts'), 'export const x = 2; // UNGATED\n');
+        const refs = listEvidence(h.d, revisionId)
+          .filter((e) => e.bytes > 0 && e.sha256.length === 64)
+          .map((e) => e.artifact_id);
+        return {
+          verdict: 'PASS',
+          mandatoryGates: ['provenance'],
+          gatePassed: { provenance: true },
+          gateEvidenceRefs: { provenance: refs },
+          findings: [],
+          evidenceResolved: refs.length > 0,
+          snapshotId: `snap-${revisionId}`,
+          reviewJobId: `job-${revisionId}-${reviews}`,
+        };
+      };
+      const deps: ControllerDeps = {
+        d: h.d,
+        runner: stubRunner('CHANGED'),
+        mandatoryGates: ['provenance'],
+        workspacePathFor: () => g.dir,
+        review,
+      };
+
+      // Tick 1: review PASS is DISCARDED — the workspace no longer matches the
+      // gate candidate, so the revision must NOT be verified.
+      const out1 = await advanceMission(m.mission_id, deps);
+      expect(out1.action).toContain('candidate-drift');
+      const revs = listRevisions(h.d, t.ticket_id);
+      expect(revs.length).toBe(1);
+      expect(getRevision(h.d, revs[0]!.revision_id)?.state).toBe('EVIDENCE_CAPTURED');
+      expect(getTicket(h.d, t.ticket_id)?.verification_state).not.toBe('VERIFIED_10_10');
+
+      // Tick 2: the 4a sweep re-executes the gates against the CURRENT tree and
+      // the (clean) review certifies THAT tree. Recovery is monotonic.
+      const out2 = await advanceMission(m.mission_id, deps);
+      expect(out2.nextState).toBe('VERIFIED_10_10');
+      expect(getTicket(h.d, t.ticket_id)?.verification_state).toBe('VERIFIED_10_10');
+    } finally { h.close(); }
+  }, 60_000);
 });

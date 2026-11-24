@@ -10,7 +10,7 @@ import {
   scheduleBlockedRetry, clearHumanAcceptance,
   getMissionGateCommands, latestGateExecution,
 } from './mission-repository';
-import { runGateExecutions } from './gate-runner';
+import { runGateExecutions, workspaceTreeIdentity } from './gate-runner';
 import type { MutationRunner, RepairResult } from './mutation-runner';
 import { changedFilesSinceFull, fingerprintWorkspace } from './mutation-runner';
 import { acquireLease, releaseLease, renewLease, reclaimStaleLease } from './reconciler';
@@ -233,6 +233,12 @@ const MAX_TRANSIENT_ATTEMPTS = 3;
 /** How many INCONCLUSIVE re-reviews of the SAME revision before we reject + replan
  *  instead of deadlocking on a mutation the reviewer persistently cannot validate. */
 const MAX_INCONCLUSIVE_REVISIONS = 3;
+/** How many times a revision may be requeued because the writable workspace
+ *  drifted away from the tree the host gates executed against. A writer that
+ *  never quiesces (e.g. a leftover mutation session) must not spin forever;
+ *  after this bound the revision is rejected so the next mutation is a
+ *  deliberate, forward step. */
+const MAX_CANDIDATE_DRIFTS = 3;
 /** Mission-level review convergence: how many times to re-review the SAME
  *  immutable revision/snapshot when the verdict is INCONCLUSIVE. A valid PASS or
  *  FINDINGS is accepted immediately; only epistemically-invalid (INCONCLUSIVE)
@@ -461,7 +467,26 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
     }
     const ws = deps.workspacePathFor(missionId);
     if (ws) {
+      if (Object.keys(getMissionGateCommands(d, missionId)).length > 0) await waitForWorkspaceQuiescence(ws);
       await executeMissionGates(d, deps, missionId, current.revision_id, ws);
+      // EVIDENCE-DRIFT GUARD: never review a tree the host gates did not
+      // execute. If the workspace moved since the gates ran, re-enter
+      // verification so the 4a sweep re-executes them against the new tree.
+      const gateIdentity = gateCandidateIdentity(d, missionId, current.revision_id);
+      const driftBefore = await candidateDrift(ws, gateIdentity.hash, gateIdentity.inconsistent);
+      if (driftBefore.drifted) {
+        return requeueOrReplanOnDrift({
+          d,
+          missionId,
+          ticketId: target.ticket_id,
+          ticketTitle: target.title,
+          ticketObjective: target.objective,
+          revisionId: current.revision_id,
+          revisionNo: current.revision_no,
+          workspaceFingerprintAfter: current.workspace_fingerprint_after || await fingerprintOrEmpty(ws),
+          detail: `before-review expected=${gateIdentity.hash ?? '(none)'} actual=${driftBefore.actual ?? '(unavailable)'} reason=${driftBefore.reason ?? 'tree-changed'}`,
+        });
+      }
       const reviewVerdict = await review({ missionId, ticketId: target.ticket_id, revisionId: current.revision_id, workspacePath: ws });
       if (getMission(d, missionId)?.state === 'CANCELLED') return { action: 'operator-cancelled', nextState: 'CANCELLED' };
       if (getTicket(d, target.ticket_id)?.objective !== target.objective) {
@@ -471,6 +496,23 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
         updateTicket(d, target.ticket_id, { active_revision_id: next.revision_id, verification_state: 'UNVERIFIED' });
         updateMissionState(d, missionId, 'REPLANNING');
         return { action: 'operator-steering-replan', nextState: 'REPLANNING' };
+      }
+      // A reviewer verdict is only meaningful for the gated candidate. A writer
+      // active during the review invalidates it — discard and re-verify.
+      const driftAfter = await candidateDrift(ws, gateIdentity.hash, gateIdentity.inconsistent);
+      if (driftAfter.drifted) {
+        return requeueOrReplanOnDrift({
+          d,
+          missionId,
+          ticketId: target.ticket_id,
+          ticketTitle: target.title,
+          ticketObjective: target.objective,
+          revisionId: current.revision_id,
+          revisionNo: current.revision_no,
+          workspaceFingerprintAfter: current.workspace_fingerprint_after || await fingerprintOrEmpty(ws),
+          detail: `after-review expected=${gateIdentity.hash ?? '(none)'} actual=${driftAfter.actual ?? '(unavailable)'} reason=${driftAfter.reason ?? 'tree-changed'}`,
+          findings: reviewVerdict.findings,
+        });
       }
       updateRevision(d, current.revision_id, { snapshot_id: reviewVerdict.snapshotId ?? undefined, review_job_id: reviewVerdict.reviewJobId ?? undefined });
       if (reviewVerdict.verdict === 'INCONCLUSIVE') {
@@ -826,10 +868,34 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
       // (INCONCLUSIVE = reviewer could not decide). A valid FINDINGS or PASS is
       // accepted immediately. Bound the re-review budget; never reject a revision
       // merely because the FIRST review was inconclusive.
+      if (Object.keys(getMissionGateCommands(d, missionId)).length > 0) await waitForWorkspaceQuiescence(workspace);
       await executeMissionGates(d, deps, missionId, current.revision_id, workspace);
+      // EVIDENCE-DRIFT GUARD: the tree that was gated is the only tree that may be
+      // reviewed/certified. A writer still active after the mutation returned must
+      // not be able to slip un-gated bytes into a passing verdict.
+      const gateIdentity = gateCandidateIdentity(d, missionId, current.revision_id);
+      const driftBefore = await candidateDrift(workspace, gateIdentity.hash, gateIdentity.inconsistent);
+      if (driftBefore.drifted) {
+        return requeueOrReplanOnDrift({
+          d,
+          missionId,
+          ticketId: target.ticket_id,
+          ticketTitle: target.title,
+          ticketObjective: target.objective,
+          revisionId: current.revision_id,
+          revisionNo: current.revision_no,
+          workspaceFingerprintAfter: result.workspaceFingerprintAfter || await fingerprintOrEmpty(workspace),
+          detail: `before-review expected=${gateIdentity.hash ?? '(none)'} actual=${driftBefore.actual ?? '(unavailable)'} reason=${driftBefore.reason ?? 'tree-changed'}`,
+          evidenceIds,
+        });
+      }
       let verdict = await review({ missionId, ticketId: target.ticket_id, revisionId: current.revision_id, workspacePath: workspace });
       let reviewAttempts = 1;
       while (verdict.verdict === 'INCONCLUSIVE' && reviewAttempts < MAX_CONVERGENT_REVIEW_ATTEMPTS) {
+        // Do not burn a re-review on a tree that already moved away from the
+        // gates: the review subject would no longer be the executed candidate.
+        const driftMid = await candidateDrift(workspace, gateIdentity.hash, gateIdentity.inconsistent);
+        if (driftMid.drifted) break;
         reviewAttempts += 1;
         verdict = await review({ missionId, ticketId: target.ticket_id, revisionId: current.revision_id, workspacePath: workspace });
       }
@@ -840,6 +906,24 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
         appendTranscript(d, { missionId, ticketId: target.ticket_id, revisionId: current.revision_id, role: 'reviewer', kind: 'finding', title: f, content: f, meta: { verdict: verdict.verdict, revision: current.revision_id } });
       }
       appendTranscript(d, { missionId, ticketId: target.ticket_id, revisionId: current.revision_id, role: 'engine', kind: 'event', title: `review ${verdict.verdict}`, content: `Review verdict ${verdict.verdict} after ${reviewAttempts} attempt(s)`, meta: { verdict: verdict.verdict, attempts: reviewAttempts, revision: current.revision_id } });
+      // A verdict is only valid for the gated candidate. If the workspace moved
+      // while the reviewers were reasoning, the verdict is evidence-invalid.
+      const driftAfter = await candidateDrift(workspace, gateIdentity.hash, gateIdentity.inconsistent);
+      if (driftAfter.drifted) {
+        return requeueOrReplanOnDrift({
+          d,
+          missionId,
+          ticketId: target.ticket_id,
+          ticketTitle: target.title,
+          ticketObjective: target.objective,
+          revisionId: current.revision_id,
+          revisionNo: current.revision_no,
+          workspaceFingerprintAfter: result.workspaceFingerprintAfter || await fingerprintOrEmpty(workspace),
+          detail: `after-review expected=${gateIdentity.hash ?? '(none)'} actual=${driftAfter.actual ?? '(unavailable)'} reason=${driftAfter.reason ?? 'tree-changed'}`,
+          findings: verdict.findings,
+          evidenceIds,
+        });
+      }
       updateRevision(d, current.revision_id, { snapshot_id: verdict.snapshotId ?? undefined, review_job_id: verdict.reviewJobId ?? undefined });
       // P0 Quality Oracle: a gate PASSes ONLY with resolved evidence references.
       if (getMission(d, missionId)?.state === 'CANCELLED') return { action: 'operator-cancelled', nextState: 'CANCELLED' };
@@ -952,6 +1036,154 @@ function incrementInconclusive(d: Db, revisionId: string): void {
   const cur = (r?.failure_signature ?? '').replace(/inconclusive:x\d+/, '');
   const n = inconclusiveCount(d, revisionId) + 1;
   updateRevision(d, revisionId, { failure_signature: `${cur}inconclusive:x${n}` });
+}
+
+/** The candidate tree hash every host gate execution for this revision agrees
+ *  on. `null` means "no executable gate to bind to" or "gates disagree" —
+ *  callers treat the latter as drift, never as a pass. */
+function gateCandidateIdentity(
+  d: Db,
+  missionId: string,
+  revisionId: string,
+): { hash: string | null; inconsistent: boolean } {
+  const keys = Object.keys(getMissionGateCommands(d, missionId));
+  const hashes = new Set<string>();
+  for (const key of keys) {
+    const exec = latestGateExecution(d, revisionId, key);
+    if (exec?.candidate_hash) hashes.add(exec.candidate_hash);
+  }
+  if (hashes.size === 0) return { hash: null, inconsistent: false };
+  if (hashes.size > 1) return { hash: null, inconsistent: true };
+  return { hash: [...hashes][0]!, inconsistent: false };
+}
+
+/**
+ * Evidence-drift guard (M6 finding). Verification is only meaningful for the
+ * EXACT tree the host executed the gates against. The writable workspace is not
+ * frozen: a mutation session can keep editing (or commit) after the controller
+ * believes the revision is complete. Certifying such a tree would bind passing
+ * execution evidence to bytes that were never executed.
+ *
+ * Returns `drifted: true` when the workspace's current git tree differs from the
+ * gate candidate (or the gates disagree with each other). Comparison is only
+ * possible for git workspaces; a non-git workspace (no gate tree identity) is
+ * reported as unbindable, which the caller treats as drift while gates exist.
+ */
+async function candidateDrift(
+  workspacePath: string,
+  expected: string | null,
+  inconsistent = false,
+): Promise<{ drifted: boolean; actual: string | null; reason?: string }> {
+  if (inconsistent) return { drifted: true, actual: null, reason: 'gate-candidates-disagree' };
+  if (!expected) return { drifted: false, actual: null };
+  const identity = workspaceTreeIdentity(workspacePath);
+  if (!identity.ok) return { drifted: true, actual: null, reason: identity.reason ?? 'tree-identity-unavailable' };
+  return { drifted: identity.hash !== expected, actual: identity.hash };
+}
+
+/** Number of evidence-drift requeues recorded for a revision (bounded). */
+function driftCount(d: Db, revisionId: string): number {
+  const sig = getRevision(d, revisionId)?.failure_signature ?? '';
+  const m = /drift:x(\d+)/.exec(sig);
+  return m ? Number(m[1]) : 0;
+}
+
+function incrementDrift(d: Db, revisionId: string): number {
+  const cur = (getRevision(d, revisionId)?.failure_signature ?? '').replace(/drift:x\d+/, '');
+  const n = driftCount(d, revisionId) + 1;
+  updateRevision(d, revisionId, { failure_signature: `${cur}drift:x${n}` });
+  return n;
+}
+
+/**
+ * Fail closed when the workspace stopped being the gated candidate.
+ *
+ * First response: re-enter verification on the CURRENT tree (the 4a sweep will
+ * re-execute the gates against it, so the next review has matching evidence).
+ * Bounded: a writer that never quiesces is not allowed to spin the mission, so
+ * after MAX_CANDIDATE_DRIFTS the revision is rejected and replanned.
+ */
+function requeueOrReplanOnDrift(opts: {
+  d: Db;
+  missionId: string;
+  ticketId: string;
+  ticketTitle: string;
+  ticketObjective: string | null | undefined;
+  revisionId: string;
+  revisionNo: number;
+  workspaceFingerprintAfter: string;
+  detail: string;
+  findings?: string[];
+  evidenceIds?: string[];
+}): { action: string; nextState: MissionState } {
+  const { d, missionId, ticketId, revisionId, revisionNo } = opts;
+  const findings = opts.findings ?? [];
+  const evidenceIds = opts.evidenceIds ?? [];
+  const n = incrementDrift(d, revisionId);
+  emitMissionEvent(d, 'revision.candidate_drift', {
+    mission_id: missionId,
+    ticket_id: ticketId,
+    revision_id: revisionId,
+    attempt: n,
+    detail: opts.detail,
+  });
+  if (n < MAX_CANDIDATE_DRIFTS) {
+    updateRevision(d, revisionId, { state: 'EVIDENCE_CAPTURED' });
+    updateMissionState(d, missionId, 'VERIFYING');
+    return { action: `candidate-drift-requeue-${n}`, nextState: 'VERIFYING' };
+  }
+  updateMissionState(d, missionId, 'REPLANNING');
+  const sig = deriveFailureSignature([], findings, [], ['candidate-drift']);
+  updateRevision(d, revisionId, { state: 'REJECTED', failure_signature: sig });
+  cancelReviewForRevision(d, revisionId, 'candidate drift');
+  const next = createRevision(d, {
+    ticket_id: ticketId,
+    parent_revision_id: revisionId,
+    hypothesis_key: `hyp-${revisionNo + 1}`,
+    failure_signature: sig,
+    workspace_fingerprint_before: opts.workspaceFingerprintAfter,
+  });
+  updateTicket(d, ticketId, { active_revision_id: next.revision_id });
+  persistPlan(d, next.revision_id, {
+    objective: opts.ticketObjective ?? opts.ticketTitle,
+    hypothesis_key: `hyp-${revisionNo + 1}`,
+    failure_signature: sig,
+    reason: 'candidate-drift',
+    findings,
+    failedGates: [],
+    evidenceIds,
+  });
+  emitMissionEvent(d, 'mission.replanned', {
+    mission_id: missionId,
+    ticket_id: ticketId,
+    revision_id: next.revision_id,
+    reason: 'candidate-drift',
+  });
+  return { action: 'replanned-candidate-drift', nextState: 'REPLANNING' };
+}
+
+/** Wait until the writable workspace stops changing (bounded). A mutation
+ *  session that is still flushing work after its prompt returned would
+ *  otherwise race the gate materialization; the hard guarantee is the
+ *  candidate-identity check, this only avoids wasting a gate+review cycle. */
+async function waitForWorkspaceQuiescence(
+  workspacePath: string,
+  stableMs = 2_000,
+  maxMs = 8_000,
+): Promise<void> {
+  const started = Date.now();
+  let last = await fingerprintOrEmpty(workspacePath);
+  let stableSince = Date.now();
+  while (Date.now() - started < maxMs) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const now = await fingerprintOrEmpty(workspacePath);
+    if (now !== last) {
+      last = now;
+      stableSince = Date.now();
+      continue;
+    }
+    if (Date.now() - stableSince >= stableMs) return;
+  }
 }
 
 /** Waterloo shutdown reason string for a transient-exhausted signature. */

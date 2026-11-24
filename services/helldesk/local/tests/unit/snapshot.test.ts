@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import { targetFingerprint, captureGitSnapshot, fsFolderSnapshot, isGitRepo } from '../../src/snapshot';
 import { makeGitFixture, makeFsFixture } from '../helpers';
-import { mkdtempSync, existsSync, readdirSync } from 'node:fs';
+import { mkdtempSync, existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -52,4 +53,23 @@ describe('snapshot engine', () => {
     expect(existsSync(join(filesAfter, 'math.js'))).toBe(true);
     expect(readdirSync(filesAfter).length).toBeGreaterThan(0);
   });
+
+  it('git-dirty pins WORKING-TREE bytes for tracked edits and untracked files (never the HEAD blob)', async () => {
+    const g = makeGitFixture();
+    mkdirSync(join(g.dir, 'src'), { recursive: true });
+    writeFileSync(join(g.dir, 'src', 'app.js'), 'export const v = 1;\n');
+    execSync('git add -A && git commit -qm "add app"', { cwd: g.dir });
+    // Dirty edit after the commit, plus a brand-new untracked file.
+    writeFileSync(join(g.dir, 'src', 'app.js'), 'export const v = 2; // DIRTY_WORKTREE\n');
+    writeFileSync(join(g.dir, 'src', 'new.js'), 'export const n = 3; // UNTRACKED\n');
+    const store = mkdtempSync(join(tmpdir(), 'gt-dirtystore-'));
+    const snap = await captureGitSnapshot({ workspacePath: g.dir, kind: 'git-dirty', snapshotStore: store });
+    expect(snap.changedFiles).toContain('src/app.js');
+    expect(snap.changedFiles).toContain('src/new.js');
+    const dirtyBlob = readFileSync(join(store, snap.snapshotId, 'files', 'src__app.js'), 'utf8');
+    expect(dirtyBlob).toContain('DIRTY_WORKTREE');
+    expect(dirtyBlob).not.toContain('export const v = 1;');
+    const untrackedBlob = readFileSync(join(store, snap.snapshotId, 'files', 'src__new.js'), 'utf8');
+    expect(untrackedBlob).toContain('UNTRACKED');
+  }, 20_000);
 });

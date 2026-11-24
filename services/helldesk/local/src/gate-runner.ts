@@ -30,6 +30,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   readlinkSync,
@@ -38,6 +39,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Db } from './db';
 import {
@@ -244,6 +246,61 @@ function runGit(args: string[], cwd: string, env: Record<string, string>): { ok:
     stderr: (r.stderr ?? '').toString(),
     status: r.status,
   };
+}
+
+/** Identity of the CURRENT writable workspace as an immutable git tree.
+ *
+ *  This is the SAME identity `materializeCandidate` binds a gate execution to
+ *  (temp index + `git add -A` + `write-tree`, respecting .gitignore). Comparing
+ *  the two answers the only question that matters at certification time:
+ *
+ *      is the tree about to be stamped VERIFIED_10_10 the tree the host
+ *      actually executed the gates against?
+ *
+ *  A mutation session (or any other writer) that keeps editing the workspace
+ *  after the gates ran MUST NOT be certifiable. The check is read-only: it uses
+ *  a throwaway index and object directory, so HEAD and the real index are never
+ *  touched.
+ */
+export function workspaceTreeIdentity(workspacePath: string): {
+  ok: boolean;
+  hash: string | null;
+  reason?: string;
+} {
+  if (!existsSync(workspacePath)) return { ok: false, hash: null, reason: 'workspace-missing' };
+  const inside = runGit(['rev-parse', '--is-inside-work-tree'], workspacePath, process.env as Record<string, string>);
+  if (!inside.ok || inside.stdout.trim() !== 'true') {
+    return { ok: false, hash: null, reason: 'not-a-git-worktree' };
+  }
+  let scratch = '';
+  try {
+    const gitDirRaw = runGit(['rev-parse', '--git-dir'], workspacePath, process.env as Record<string, string>).stdout.trim();
+    if (!gitDirRaw) return { ok: false, hash: null, reason: 'git-dir-unresolved' };
+    const gitDir = isAbsolute(gitDirRaw) ? gitDirRaw : resolve(workspacePath, gitDirRaw);
+    scratch = mkdtempSync(join(tmpdir(), 'helldesk-tree-'));
+    const tempObjects = join(scratch, 'objects');
+    mkdirSync(tempObjects, { recursive: true });
+    const gitEnv: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      GIT_INDEX_FILE: join(scratch, 'index'),
+      GIT_OBJECT_DIRECTORY: tempObjects,
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: join(gitDir, 'objects'),
+    };
+    const add = runGit(['add', '-A'], workspacePath, gitEnv);
+    if (!add.ok) return { ok: false, hash: null, reason: `git-add-failed: ${add.stderr.slice(0, 300)}` };
+    const tree = runGit(['write-tree'], workspacePath, gitEnv);
+    const hash = tree.stdout.trim();
+    if (!tree.ok || !/^[0-9a-f]{40,64}$/i.test(hash)) {
+      return { ok: false, hash: null, reason: `git-write-tree-failed: ${tree.stderr.slice(0, 300)}` };
+    }
+    return { ok: true, hash };
+  } catch (err) {
+    return { ok: false, hash: null, reason: err instanceof Error ? err.message : String(err) };
+  } finally {
+    if (scratch) {
+      try { rmSync(scratch, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  }
 }
 
 function listTreeFiles(root: string, maxFiles = MAX_TREE_FILES): string[] {

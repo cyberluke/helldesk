@@ -1,6 +1,6 @@
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { openDb } from '../src/db';
 import { loadConfigLegacy } from './config-factory';
@@ -29,7 +29,7 @@ export function makeGitFixture(opts?: {
   for (const c of commits) {
     for (const [name, content] of Object.entries(c.files)) {
       const full = join(dir, name);
-      mkdirSync(dir.slice(0, dir.length), { recursive: true });
+      mkdirSync(dirname(full), { recursive: true });
       writeFileSync(full, content);
     }
     execSync(`git add -A && git commit -qm "${c.msg}"`, { cwd: dir });

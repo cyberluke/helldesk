@@ -120,13 +120,24 @@ export function makeEngineReviewHook(engine: Engine, gateKeys: string[] = REPORT
     if (existing?.snapshotId) {
       try {
         const manifest = loadManifest(engine.snapshotStore, existing.snapshotId);
-        const have = new Set(listEvidence(engine.d, revisionId).map((e) => e.path ?? ''));
+        // Recapture EVERY changed file. captureEvidence is idempotent per
+        // (revision, path, sha256, bytes), so unchanged files reuse their
+        // artifact and a file that changed after an earlier review pass gets a
+        // NEW content-addressed artifact. Never gate a review on a stale hash:
+        // the manifest below is the reviewer's contract for what "verified"
+        // means for this revision.
         for (const f of manifest?.changedFiles ?? []) {
-          if (f && !have.has(f)) captureEvidence(engine.d, revisionId, 'source', f, workspacePath);
+          if (f) captureEvidence(engine.d, revisionId, 'source', f, workspacePath);
         }
       } catch { /* best effort: gates stay fail-closed if evidence cannot be bound */ }
     }
-    const evidence = listEvidence(engine.d, revisionId);
+    // One manifest entry per path (newest artifact wins) so an earlier stale
+    // capture cannot be presented to reviewers as an alternative truth.
+    const latestByPath = new Map<string, ReturnType<typeof listEvidence>[number]>();
+    for (const e of listEvidence(engine.d, revisionId)) {
+      latestByPath.set(e.path ?? `#${e.artifact_id}`, e);
+    }
+    const evidence = [...latestByPath.values()];
     const evidenceManifest = evidence.map((e) => ({
       artifactId: e.artifact_id,
       kind: e.kind,

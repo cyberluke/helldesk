@@ -92,8 +92,15 @@ export async function gitChangedFiles(workspacePath: string, base: string | null
   return files.filter((f) => !GIT_PATH_EXCLUDES.some((e) => f.includes(e)));
 }
 
-/** Deterministic dirty-state capture: staged + unstaged + untracked. */
-export async function captureDirty(workspacePath: string): Promise<{ patch: string; untracked: string; changedFiles: string[] }> {
+/** Deterministic dirty-state capture: staged + unstaged + untracked.
+ *
+ *  `untrackedFiles` is returned separately so the snapshot can (a) list
+ *  untracked files as part of the review subject and (b) materialize their
+ *  WORKING-TREE bytes. A dirty file must be captured from disk, never from
+ *  `git show HEAD:<path>` — the committed blob is a different artifact, and a
+ *  snapshot that claims to freeze the working tree must not silently pin the
+ *  pre-edit content. */
+export async function captureDirty(workspacePath: string): Promise<{ patch: string; untracked: string; changedFiles: string[]; untrackedFiles: string[] }> {
   let patch = '';
   let changedFiles: string[] = [];
   try {
@@ -106,6 +113,7 @@ export async function captureDirty(workspacePath: string): Promise<{ patch: stri
     patch = await runGit(workspacePath, ['diff', '--no-color']);
   } catch { /* no staged/unstaged diff */ }
   let untracked = '';
+  const untrackedFiles: string[] = [];
   try {
     const files = (await runGit(workspacePath, ['ls-files', '--others', '--exclude-standard'])).split('\n').filter(Boolean);
     const parts: string[] = [];
@@ -116,12 +124,13 @@ export async function captureDirty(workspacePath: string): Promise<{ patch: stri
       try {
         const data = readFileSync(p);
         parts.push(`___FILE___ ${f}\n` + data.toString('utf-8') + '\n');
+        untrackedFiles.push(f.replace(/\\/g, '/'));
       } catch { /* skip unreadable */ }
     }
     untracked = parts.join('');
   } catch { /* no untracked */ }
   // Use the whole file list (tracked status) to build untracked hash even if ls-files failed.
-  return { patch, untracked, changedFiles };
+  return { patch, untracked, changedFiles, untrackedFiles };
 }
 
 /**
@@ -173,6 +182,8 @@ export async function captureGitSnapshot(opts: {
   let changedFiles: string[] = [];
   let diff = '';
   let kindLocal: SubjectKind = kind;
+  /** Files to materialize from the working tree (dirty subject) instead of HEAD. */
+  let fileSources: Set<string> | null = null;
 
   if (kind === 'git-head') {
     const head = opts.head ?? await gitHead(workspacePath);
@@ -222,6 +233,10 @@ export async function captureGitSnapshot(opts: {
     }
     // append dirty patch
     const dirty = await captureDirty(workspacePath);
+    // Files whose bytes must come from the WORKING TREE, not the HEAD blob:
+    // tracked files with staged/unstaged edits, plus untracked files that are
+    // part of the review subject.
+    const worktreeFiles = new Set<string>([...dirty.changedFiles, ...dirty.untrackedFiles].map((f) => f.replace(/\\/g, '/')));
     if (includeDirty && dirty.patch.trim().length > 0) {
       if (baseHash) diff += '\n\n=== WORKING TREE (staged+unstaged) ===\n' + dirty.patch;
       dirtyHash = sha256(dirty.patch);
@@ -233,7 +248,12 @@ export async function captureGitSnapshot(opts: {
     }
     if (includeUntracked && dirty.untracked.trim().length > 0) {
       untrackedHashD = sha256(dirty.untracked);
+      // Untracked files are real review subject too — list them so their bytes
+      // are materialized into the read-only blob store and reviewers can inspect
+      // them (the diff alone carries their content under ___FILE___ markers).
+      changedFiles = [...changedFiles, ...dirty.untrackedFiles].filter((f, i, a) => a.indexOf(f) === i);
     }
+    fileSources = worktreeFiles;
   } else {
     throw new SnapshotError('unsupported', `Git snapshot does not support kind ${kind}`);
   }
@@ -244,7 +264,7 @@ export async function captureGitSnapshot(opts: {
   }
 
   // Materialize a read-only blob store of changed file contents at pinned revisions.
-  await materializeChangedBlobs(workspacePath, baseHash, headHash, changedFiles, snapshotStore, snapshotId);
+  await materializeChangedBlobs(workspacePath, baseHash, headHash, changedFiles, snapshotStore, snapshotId, fileSources);
 
   const manifest = {
     snapshotId,
@@ -282,14 +302,20 @@ export async function captureGitSnapshot(opts: {
   };
 }
 
-/** Materialize changed-file contents into the snapshot store (bounded). */
+/** Materialize changed-file contents into the snapshot store (bounded).
+ *
+ *  `worktreeFiles` (git-dirty subjects) forces a file's bytes to be read from
+ *  the CURRENT working tree. That is the only correct source for a dirty or
+ *  untracked file: `git show <head>:<path>` would pin the pre-edit blob and
+ *  produce a snapshot whose stored bytes contradict its own diff. */
 export async function materializeChangedBlobs(
   workspacePath: string,
   baseHash: string | null,
   headHash: string | null,
   changedFiles: string[],
   store: string,
-  snapshotId: string
+  snapshotId: string,
+  worktreeFiles?: Set<string> | null,
 ): Promise<{ blobs: string[]; skipped: string[] }> {
   const blobs: string[] = [];
   const skipped: string[] = [];
@@ -302,18 +328,29 @@ export async function materializeChangedBlobs(
       skipped.push(f);
       continue;
     }
-    if (!headHash) { skipped.push(f); continue; }
-    let content: string;
-    try {
-      content = await runGit(workspacePath, ['show', `${headHash}:${f}`]);
-    } catch {
-      // binary or absent at head — try base
-      if (baseHash) {
-        try { content = await runGit(workspacePath, ['show', `${baseHash}:${f}`]); }
-        catch { skipped.push(f); continue; }
-      } else { skipped.push(f); continue; }
+    const relKey = f.replace(/\\/g, '/');
+    let bytes: Buffer | null = null;
+    if (worktreeFiles?.has(relKey)) {
+      try {
+        const onDisk = join(workspacePath, relKey);
+        if (existsSync(onDisk)) bytes = readFileSync(onDisk);
+      } catch { /* fall back to git blobs */ }
     }
-    total += Buffer.byteLength(content);
+    if (bytes == null) {
+      if (!headHash) { skipped.push(f); continue; }
+      let content: string;
+      try {
+        content = await runGit(workspacePath, ['show', `${headHash}:${f}`]);
+      } catch {
+        // binary or absent at head — try base
+        if (baseHash) {
+          try { content = await runGit(workspacePath, ['show', `${baseHash}:${f}`]); }
+          catch { skipped.push(f); continue; }
+        } else { skipped.push(f); continue; }
+      }
+      bytes = Buffer.from(content, 'utf8');
+    }
+    total += bytes.byteLength;
     if (total > maxBytes) {
       skipped.push(f);
       continue;
@@ -321,7 +358,7 @@ export async function materializeChangedBlobs(
     const safe = f.replace(/\\/g, '/').replace(/[/\\]/g, '__');
     const p = join(dir, safe);
     try {
-      writeFileSync(p, content);
+      writeFileSync(p, bytes);
       blobs.push(relative(store, p).replace(/\\/g, '/'));
     } catch { skipped.push(f); }
   }
