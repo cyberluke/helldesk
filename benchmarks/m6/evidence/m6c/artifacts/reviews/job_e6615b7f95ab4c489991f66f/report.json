@@ -1,0 +1,151 @@
+{
+  "jobId": "job_e6615b7f95ab4c489991f66f",
+  "targetFingerprint": "2e8dba01c9a3d3d8e87d2b8bee12a11e951dbb1d91d9a44db5e41b7c0029a688",
+  "result": "FINDINGS",
+  "coverage": {
+    "changedFiles": 1,
+    "inspectedFiles": 1,
+    "uncoveredPaths": []
+  },
+  "findings": [
+    {
+      "id": "fnd_lcu36rch14m",
+      "severity": "BLOCKER",
+      "confidence": "VERIFIED",
+      "title": "functional_correctness executed gate FAIL (exit=1): CTA-click / 'Plan selected' toast and 460x460 no-scrollbar contract unproven",
+      "file": "src/styles.css",
+      "lineStart": 1,
+      "lineEnd": 1,
+      "revision": "rev_0f8946edb2204eb5aceacc0a1a04d83c",
+      "evidence": "Executed gate record: functional_correctness: FAIL exit=1 duration=61469ms evidence=ev_cd57c1fa9bfc4573beb15f9b4c3675a3 candidate=db73d6a911bc. The frozen evidence diff for the sole changed file src/styles.css contains zero hunks, and no artifact in the snapshot contains the literal 'Plan selected', so the click-to-toast outcome and scrollbar metrics cannot counter the executed FAIL.",
+      "counterexample": "Replay the mandatory gate suite against rev_0f8946edb2204eb5aceacc0a1a04d83c: functional_correctness exits 1 after ~61s, so at least one acceptance assertion (CTA visible inside the card, 460x460 stage with scrollWidth==clientWidth and scrollHeight==clientHeight, or click producing the 'Plan selected' toast) is unsatisfied; no passing artifact exists to override it.",
+      "requirement": "MISSION/ticket: 'the 460x460 stage renders without scrollbars, and clicking the CTA shows the Plan selected toast. The visual golden and the functional click must pass.'",
+      "verification": "Re-run functional_correctness against a revision whose src/styles.css diff is non-empty and attach resolved evidence ev_cd57c1fa9bfc4573beb15f9b4c3675a3 showing zero failing assertions plus the toast assertion output.",
+      "reviewerIds": [
+        "A",
+        "B"
+      ]
+    },
+    {
+      "id": "fnd_8p5ut9shqft",
+      "severity": "BLOCKER",
+      "confidence": "VERIFIED",
+      "title": "regression_checks executed gate FAIL (exit=1) — mandatory 10/10 gate suite not green",
+      "file": "src/styles.css",
+      "lineStart": 1,
+      "lineEnd": 1,
+      "revision": "rev_0f8946edb2204eb5aceacc0a1a04d83c",
+      "evidence": "Executed gate record: regression_checks: FAIL exit=1 duration=124440ms evidence=ev_f3d9c4c65cd143efb3e19583849cb1d7 candidate=db73d6a911bc. Both reviewers agree the recorded gate failed; they differ only on severity (A: HIGH, B: BLOCKER), reconciled upward because the stated gate rule requires ALL mandatory gates to PASS before acceptance.",
+      "counterexample": "Execute the regression suite against the snapshot and observe exit=1; with no passing artifact anywhere in the frozen evidence set, the 'keep existing app behavior' constraint cannot be asserted as met for this revision.",
+      "requirement": "MANDATORY GATES (10/10 requires ALL PASS) and TASK CONSTRAINTS: 'Keep the existing app behavior and do not weaken the checks.'",
+      "verification": "Re-run regression_checks and attach resolved evidence ev_f3d9c4c65cd143efb3e19583849cb1d7 with the specific failing test/selector, then map its cause to a src/styles.css hunk that is actually present in the frozen diff.",
+      "reviewerIds": [
+        "A",
+        "B"
+      ]
+    },
+    {
+      "id": "fnd_b53n7b0rplc",
+      "severity": "HIGH",
+      "confidence": "VERIFIED",
+      "title": "Sole changed file src/styles.css has an empty frozen diff — the claimed CTA/overflow fix is not reproducible from the snapshot",
+      "file": "src/styles.css",
+      "lineStart": 1,
+      "lineEnd": 1,
+      "revision": "rev_0f8946edb2204eb5aceacc0a1a04d83c",
+      "evidence": "Changed-file list declares exactly one file, src/styles.css; the section labeled 'Frozen evidence diff (complete immutable snapshot)' contains zero added or removed lines. artifact_provenance: PASS exit=0 duration=63ms evidence=ev_04d2e0af9da14413bce1e9120b407b7e. A's LIKELY confidence and B's VERIFIED confidence describe the same observable fact and are reconciled to VERIFIED because the emptiness is directly readable in the frozen snapshot.",
+      "counterexample": "A grader replaying the snapshot receives an empty patch: baseline source is indistinguishable from the submitted tree, so any assertion that the CTA was repositioned inside the card or that stage overflow was removed rests on no code at all.",
+      "requirement": "ACCEPTANCE CHECKLIST: 'fix the off-screen pricing-card CTA from the attached screenshot' with the visual golden passing; the mandatory REPRO rule forbids accepting an unsupported claim.",
+      "verification": "Re-materialize the revision so the src/styles.css hunks appear in the frozen diff, then produce the 460x460 golden screenshot comparison plus scroll metrics (scrollWidth==clientWidth, scrollHeight==clientHeight) for that revision.",
+      "reviewerIds": [
+        "A",
+        "B"
+      ]
+    },
+    {
+      "id": "fnd_arj5n6edym8",
+      "severity": "HIGH",
+      "confidence": "VERIFIED",
+      "title": "No post-fix render/screenshot or golden comparison; the only attached image is the requirement reference",
+      "file": "src/styles.css",
+      "lineStart": 1,
+      "lineEnd": 1,
+      "revision": "rev_0f8946edb2204eb5aceacc0a1a04d83c",
+      "evidence": "The evidence set contains exactly one image, 0-pricing-card.png, which is the requirement reference (TEAM PLAN / 'Ship verified work' / $29 per seat / three bullets / dark 'Choose plan' CTA). Requirements name the broken capture .local/benchmark/m6c/broken-pricing-card.png, but no fixed-state capture at rev_0f8946edb2204eb5aceacc0a1a04d83c accompanies the snapshot.",
+      "counterexample": "Compare the evidence set: with one reference image and no rendered-stage image after the revision, there is no screenshot-comparison artifact at any named state, and the reference image cannot substitute for parity/comparison proof.",
+      "requirement": "Adjudication contract item 7: a requirement image needs screenshot-comparison proof at each named state; the visual golden must pass.",
+      "verification": "Provide fixed-state capture(s) of the 460x460 stage at rev_0f8946edb2204eb5aceacc0a1a04d83c with CTA visible in-card, plus the golden comparison result, alongside the requirement reference image.",
+      "reviewerIds": [
+        "B"
+      ]
+    },
+    {
+      "id": "fnd_idyg31y8upn",
+      "severity": "MEDIUM",
+      "confidence": "HYPOTHESIS",
+      "title": "Hypothetical CSS counterexample classes (fixed/oversized CTA or over-wide card) may still overflow the 460x460 stage",
+      "file": "src/styles.css",
+      "lineStart": 1,
+      "lineEnd": 1,
+      "revision": "rev_0f8946edb2204eb5aceacc0a1a04d83c",
+      "evidence": "src/styles.css diff is empty (no rules visible); stage size 460x460 per ticket; the reference card in 0-pricing-card.png spans roughly x=66..506 in a 568px canvas, which is reference-only and not parity proof.",
+      "counterexample": "Speculative only: e.g. .pricing-card{min-width:520px} inside a 460px stage or .pricing-cta{position:absolute;top:9999px} would reproduce the defect, but the snapshot shows no such rule nor any rule excluding it.",
+      "requirement": "Off-screen CTA fix with no stage overflow in the visual golden.",
+      "verification": "Not verifiable against the empty diff; becomes testable only after a non-empty src/styles.css revision and rendered scroll metrics are produced.",
+      "reviewerIds": [
+        "B"
+      ]
+    },
+    {
+      "id": "fnd_bo1x335oiid",
+      "severity": "LOW",
+      "confidence": "VERIFIED",
+      "title": "Changed set contains only src/styles.css; no gate/test/config weakening observed in this revision",
+      "file": "src/styles.css",
+      "lineStart": 1,
+      "lineEnd": 1,
+      "revision": "rev_0f8946edb2204eb5aceacc0a1a04d83c",
+      "evidence": "Changed-file list enumerates one entry: src/styles.css. No test, gate, or configuration path appears in the changed set.",
+      "counterexample": "Enumerate the changed files: a single stylesheet entry; gate integrity is untouched here and must be re-asserted once a non-empty diff exists.",
+      "requirement": "TASK CONSTRAINT: 'do not weaken the checks.'",
+      "verification": "Re-enumerate changed files on the next revision and confirm no test/gate/config path is included.",
+      "reviewerIds": [
+        "B"
+      ]
+    }
+  ],
+  "models": [
+    {
+      "role": "reviewer-a",
+      "providerID": "cyberluke",
+      "modelID": "deepseek-ai--deepseek-v41-flash-1017"
+    },
+    {
+      "role": "reviewer-b",
+      "providerID": "cyberluke",
+      "modelID": "deepseek-ai--deepseek-v41-flash-1017"
+    },
+    {
+      "role": "adjudicator",
+      "providerID": "cyberluke",
+      "modelID": "deepseek-ai--deepseek-v41-flash-1017"
+    }
+  ],
+  "attempts": [
+    1
+  ],
+  "createdAt": "2026-11-24T12:20:50.704Z",
+  "completedAt": "2026-11-24T12:23:14.075Z",
+  "policy": {
+    "summary": "Reviewer A + Reviewer B + ExcellenceGovernor (full)",
+    "reviewerA": true,
+    "reviewerB": true,
+    "governor": true,
+    "controls": {}
+  },
+  "cost": {
+    "tokensIn": 0,
+    "tokensOut": 0,
+    "cost": null
+  }
+}

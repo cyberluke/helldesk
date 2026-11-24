@@ -22,13 +22,18 @@
 #>
 param(
   [Parameter(Mandatory = $true)][string]$RunId,
-  [int]$Port = 4791
+  [int]$Port = 4791,
+  # Optional run root. Use a path OUTSIDE the repository for a blind run: the
+  # mutation agent must not be able to read the engine, the evidence bundles, or
+  # a previous run's diff. Default keeps the historical .local location.
+  [string]$Root
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $fixture = Join-Path $repo 'benchmarks\v0\visual-fixture'
-$root = Join-Path $repo ".local\benchmark\$RunId"
+if (-not $Root) { $Root = Join-Path $repo ".local\benchmark\$RunId" }
+$root = $Root
 $workspace = Join-Path $root 'live-workspace'
 $dataDir = Join-Path $root 'live-data'
 
@@ -88,9 +93,15 @@ if ($LASTEXITCODE -ne 0) { throw "baseline commit failed" }
 $head = (& git -C $workspace rev-parse HEAD).Trim()
 
 # The screenshot the mission objective refers to (same fixture as run A).
-$shotSrc = Join-Path $repo '.local\benchmark\m6\broken-pricing-card.png'
+$shotCandidates = @(
+  (Join-Path $repo '.local\benchmark\m6\broken-pricing-card.png'),
+  (Join-Path $repo '.local\benchmark\m6e\broken-pricing-card.png'),
+  (Join-Path $repo '.local\benchmark\m6d\broken-pricing-card.png')
+)
+$shotSrc = $shotCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 $shot = Join-Path $root 'broken-pricing-card.png'
-if (Test-Path -LiteralPath $shotSrc) { Copy-Item -LiteralPath $shotSrc -Destination $shot -Force }
+if (-not $shotSrc) { throw 'No broken-pricing-card.png source found (m6/m6d/m6e).' }
+Copy-Item -LiteralPath $shotSrc -Destination $shot -Force
 
 # Isolated control-plane config (no production paths, autonomy enabled for this run).
 $config = [ordered]@{
@@ -127,7 +138,7 @@ $config | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $configPath -Encod
 $missionSrc = Join-Path $PSScriptRoot 'mission.json'
 $mission = Get-Content -LiteralPath $missionSrc -Raw | ConvertFrom-Json
 $mission.workspaceId = "ws_$RunId"
-$mission.objective = $mission.objective.Replace('.local/benchmark/m6/broken-pricing-card.png', ".local/benchmark/$RunId/broken-pricing-card.png")
+$mission.objective = $mission.objective.Replace('.local/benchmark/m6/broken-pricing-card.png', $shot)
 $missionPath = Join-Path $root 'mission.request.json'
 $mission | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $missionPath -Encoding utf8NoBOM
 

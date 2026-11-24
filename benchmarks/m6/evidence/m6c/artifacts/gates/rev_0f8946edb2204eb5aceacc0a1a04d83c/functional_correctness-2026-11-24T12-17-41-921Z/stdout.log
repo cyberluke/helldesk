@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:51136/",
+  "checks": [
+    {
+      "type": "selectorInViewport",
+      "selector": "[data-testid=cta]",
+      "ok": true,
+      "detail": {
+        "ok": true,
+        "rect": {
+          "bottom": 592.2890625,
+          "left": 678.5,
+          "right": 794.5078125,
+          "top": 556.2890625
+        }
+      }
+    },
+    {
+      "type": "clickText",
+      "selector": "[data-testid=cta]",
+      "expectSelector": "[data-testid=toast]",
+      "expected": "Plan selected",
+      "actual": "Plan selected",
+      "ok": true
+    }
+  ],
+  "visual": {
+    "ok": false,
+    "golden": "${DATA}\\gate-runs\\gate-worktrees\\rev_0f8946edb2204eb5aceacc0a1a04d83c\\tree\\tests\\golden\\pricing-card.png",
+    "actual": "${DATA}\\gate-runs\\gate-runs\\rev_0f8946edb2204eb5aceacc0a1a04d83c\\functional_correctness-2026-11-24T12-17-41-921Z\\actual.png",
+    "diff": null,
+    "ratio": null,
+    "threshold": 0.002,
+    "reason": "size mismatch actual 565x565, golden 565x566"
+  }
+}

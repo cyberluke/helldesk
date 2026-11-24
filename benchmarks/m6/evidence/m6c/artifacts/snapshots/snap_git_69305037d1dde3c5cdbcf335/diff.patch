@@ -1,0 +1,20 @@
+diff --git a/src/styles.css b/src/styles.css
+index f1ed80e..4bf0da9 100644
+--- a/src/styles.css
++++ b/src/styles.css
+@@ -73,10 +73,12 @@ body {
+   color: #1e293b;
+ }
+ 
++/* The CTA participates in the card's normal flow. The seeded defect used
++   `position: absolute; left: 9999px; top: 24px`, which removed the button from
++   flow, pushed it thousands of pixels off-canvas, and grew the document so the
++   fixed 460x460 stage gained horizontal and vertical scrollbars. Static flow
++   keeps the button inside the card at every viewport size. */
+ .pricing-card__cta {
+-  position: absolute;
+-  left: 9999px;
+-  top: 24px;
+   padding: 10px 16px;
+   border: 0;
+   border-radius: 10px;

@@ -1,0 +1,358 @@
+{
+  "schema": "helldesk.m6.evidence.v1",
+  "runId": "m6e",
+  "generatedAt": "2026-11-24T15:17:40.142Z",
+  "generator": "benchmarks/m6/export-evidence.ts",
+  "engine": {
+    "repoHead": "06f5c252ac792a833e80056ab032021435e10616",
+    "repoBranch": "master"
+  },
+  "mission": {
+    "mission_id": "mis_442c6eed93f849f1b55b657a4b4b13ae",
+    "workspace_id": "ws_de1520fd5945bc68",
+    "objective": "M6 live multimodal run: fix the off-screen pricing-card CTA from the attached screenshot. The screenshot is .local/benchmark/m6e/broken-pricing-card.png. The visual golden and the functional CTA must pass. Do not weaken the gates.",
+    "state": "CANCELLED",
+    "verified_at": null,
+    "created_at": "2026-11-24T15:08:19.826Z",
+    "updated_at": "2026-11-24T15:17:36.579Z",
+    "policy_version": "ender-1",
+    "task_gates": [
+      "functional_correctness",
+      "regression_checks",
+      "artifact_provenance"
+    ],
+    "gate_commands": "{\"functional_correctness\":{\"browser\":{\"url\":\"http://127.0.0.1:{port}/\",\"server\":{\"command\":\"bun run build && bun run preview -- --host 127.0.0.1 --port {port} --strictPort\",\"url\":\"http://127.0.0.1:{port}/\",\"timeoutMs\":120000},\"viewport\":{\"width\":1280,\"height\":720,\"deviceScaleFactor\":1},\"stageSelector\":\"[data-testid=stage]\",\"checks\":[{\"type\":\"selectorInViewport\",\"selector\":\"[data-testid=cta]\"},{\"type\":\"clickText\",\"selector\":\"[data-testid=cta]\",\"expectSelector\":\"[data-testid=toast]\",\"expectText\":\"Plan selected\"}],\"screenshot\":{\"golden\":\"tests/golden/pricing-card.png\",\"maxDiffRatio\":0.002},\"timeoutMs\":180000},\"timeoutMs\":180000},\"regression_checks\":{\"browser\":{\"url\":\"http://127.0.0.1:{port}/\",\"server\":{\"command\":\"bun run build && bun run preview -- --host 127.0.0.1 --port {port} --strictPort\",\"url\":\"http://127.0.0.1:{port}/\",\"timeoutMs\":120000},\"viewport\":{\"width\":1280,\"height\":720,\"deviceScaleFactor\":1},\"stageSelector\":\"[data-testid=stage]\",\"checks\":[{\"type\":\"selectorInViewport\",\"selector\":\"[data-testid=cta]\"},{\"type\":\"clickText\",\"selector\":\"[data-testid=cta]\",\"expectSelector\":\"[data-testid=toast]\",\"expectText\":\"Plan selected\"}],\"screenshot\":{\"golden\":\"tests/golden/pricing-card.png\",\"maxDiffRatio\":0.002},\"timeoutMs\":180000},\"timeoutMs\":180000},\"artifact_provenance\":{\"command\":\"git status --porcelain\",\"timeoutMs\":30000}}",
+    "engine_matrix": {
+      "mutation": {
+        "engine": "kilo",
+        "providerID": "cyberluke",
+        "modelID": "deepseek-ai--deepseek-v41-flash-1017"
+      },
+      "review": {
+        "engine": "kilo",
+        "providerID": "cyberluke",
+        "modelID": "deepseek-ai--deepseek-v41-flash-1017"
+      },
+      "adjudicate": {
+        "engine": "kilo",
+        "providerID": "cyberluke",
+        "modelID": "deepseek-ai--deepseek-v41-flash-1017"
+      }
+    },
+    "baseline": "{\"version\":1,\"capturedAt\":\"2026-11-24T15:08:19.752Z\",\"gitCommit\":\"b392d7f1f6fcc5146debde147c60d880d7d4be9b\",\"gitTree\":\"27ef07a18b7ff16decb90301e2ee87d46e69424e\",\"protectedPaths\":[\"**/*.test.*\",\"**/*.spec.*\",\"**/test/**\",\"**/tests/**\",\"**/__tests__/**\",\"**/test.mjs\",\"**/test.js\",\"**/test.ts\",\"**/server.test.*\",\"**/index.test.*\",\"package.json\",\"package-lock.json\",\"pnpm-lock.yaml\",\"bun.lock\",\"bun.lockb\",\"yarn.lock\",\"tsconfig.json\",\"**/vite.config.*\",\"**/vitest.config.*\",\"**/jest.config.*\",\".github/workflows/**\"],\"allowProtectedPaths\":[],\"protectedFiles\":[{\"path\":\"bun.lock\",\"sha256\":\"fcea7fea823a798c413b7c871eb3745e9a1495092f391952bfd404ac770c6199\",\"mode\":\"file\",\"size\":19924},{\"path\":\"package.json\",\"sha256\":\"9e04872cc10d2318228bbe3ab60831be0c06a8a7572a7dbdfac186fa78283bd3\",\"mode\":\"file\",\"size\":487},{\"path\":\"tests/golden/pricing-card.png\",\"sha256\":\"5fa25647458cf2273d86b3dc00865644c1bee047d87075f4cab078dbf7f48dd0\",\"mode\":\"file\",\"size\":31981},{\"path\":\"tsconfig.json\",\"sha256\":\"504797b8ae1f8940c64684fb556fb1c7091a9b7dade7928fb872c8b8108094c2\",\"mode\":\"file\",\"size\":304},{\"path\":\"vite.config.ts\",\"sha256\":\"b73d01b2d2c72ae61f353efeaf9e7d9648ef311631b3ea0f8a84c1f71b7f8f42\",\"mode\":\"file\",\"size\":214}]}",
+    "human_acceptance": null
+  },
+  "tickets": [
+    {
+      "ticket_id": "ticket_2eacda045bae4345bfe5d6f7061b024b",
+      "title": "Fix the off-screen pricing-card CTA from the screenshot",
+      "objective": "The attached screenshot shows the pricing-card CTA missing: it is positioned far off the card and creates scrollbars. Fix the styling so the CTA is visible inside the card, the 460x460 stage renders without scrollbars, and clicking the CTA shows the 'Plan selected' toast. The visual golden and the functional click must pass. Keep the existing app behavior and do not weaken the checks.",
+      "execution_state": "READY",
+      "verification_state": "UNVERIFIED",
+      "active_revision_id": "rev_0e95f589cf774cdf9d82a7687eadca92"
+    }
+  ],
+  "revisions": [
+    {
+      "revision_id": "rev_0e95f589cf774cdf9d82a7687eadca92",
+      "revision_no": 1,
+      "ticket_id": "ticket_2eacda045bae4345bfe5d6f7061b024b",
+      "state": "EVIDENCE_CAPTURED",
+      "created_at": "2026-11-24T15:08:23.546Z",
+      "completed_at": null,
+      "failure_signature": null,
+      "snapshot_id": null,
+      "review_job_id": "job_efeedab270ba4846b2b24bec",
+      "workspace_fingerprint_before": "fa1e53d25d6d9e6471feb7ff91ae90b750a271dfde247e1d6f97de472b02759d",
+      "workspace_fingerprint_after": "17a3b24e6b0147fcb82a97d6f761114f100b6e3546042bf49bea487b47b9b0cd",
+      "gate_candidates": [
+        "e1647c8a304f8bc43dc38c5e7ce15e2b88c10bc2"
+      ],
+      "gate_candidates_consistent": true,
+      "gates": [
+        {
+          "gate_key": "artifact_provenance",
+          "candidate_hash": "e1647c8a304f8bc43dc38c5e7ce15e2b88c10bc2",
+          "status": "PASS",
+          "exit_code": 0,
+          "duration_ms": 234,
+          "command": "git status --porcelain",
+          "evidence_artifact_id": "ev_624b137c7a674ff6b73b753e26cb567f",
+          "result_sha256": "fbbfa2422814ec4e1a56f96bc77416aa6d9cbd04c9992222871b2213fedfc716",
+          "result_path": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/artifact_provenance-2026-11-24T15-13-57-813Z/result.json",
+          "stdout_sha256": "1fb3cdbbd736f809c908bdfea5b37f4c483d9e112a04e103f3fdc93885f51e68",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "started_at": "2026-11-24T15:13:57.813Z",
+          "finished_at": "2026-11-24T15:13:58.050Z",
+          "outputs": {
+            "stdout.log": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/artifact_provenance-2026-11-24T15-13-57-813Z/stdout.log",
+            "stderr.log": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/artifact_provenance-2026-11-24T15-13-57-813Z/stderr.log"
+          }
+        },
+        {
+          "gate_key": "functional_correctness",
+          "candidate_hash": "e1647c8a304f8bc43dc38c5e7ce15e2b88c10bc2",
+          "status": "FAIL",
+          "exit_code": 1,
+          "duration_ms": 1800,
+          "command": "browser-gate:http://127.0.0.1:63740/",
+          "evidence_artifact_id": "ev_0f555e0b0fb14d10939c61060ceadee9",
+          "result_sha256": "0095be951d19f9b1cb8d389f6fe4a89085110845f057e77078574e8039911478",
+          "result_path": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/functional_correctness-2026-11-24T15-13-58-063Z/result.json",
+          "stdout_sha256": "064580f19a7c6c13ec5f1d94b864219bdf6015c45e90eef04ce619261972c8c3",
+          "stderr_sha256": "d84ff43ad3c4ad98e0dfc4826965588fbb5ef7eb07af2724935226a60471a336",
+          "started_at": "2026-11-24T15:13:58.063Z",
+          "finished_at": "2026-11-24T15:14:00.551Z",
+          "outputs": {
+            "stdout.log": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/functional_correctness-2026-11-24T15-13-58-063Z/stdout.log",
+            "stderr.log": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/functional_correctness-2026-11-24T15-13-58-063Z/stderr.log",
+            "actual.png": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/functional_correctness-2026-11-24T15-13-58-063Z/actual.png",
+            "full.png": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/functional_correctness-2026-11-24T15-13-58-063Z/full.png"
+          }
+        },
+        {
+          "gate_key": "regression_checks",
+          "candidate_hash": "e1647c8a304f8bc43dc38c5e7ce15e2b88c10bc2",
+          "status": "FAIL",
+          "exit_code": 1,
+          "duration_ms": 2696,
+          "command": "browser-gate:http://127.0.0.1:61565/",
+          "evidence_artifact_id": "ev_ef38fd11a6b44c1c9a5a0304a6834292",
+          "result_sha256": "71f9d2fe606628e9fdc925b370dc85696f3519e575a98abea2d5a839602d7f4c",
+          "result_path": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/regression_checks-2026-11-24T15-14-00-566Z/result.json",
+          "stdout_sha256": "8f042d9892e7b8b7de9033433ba9b1f33b29253111b9c16c5887ef3c89634097",
+          "stderr_sha256": "d84ff43ad3c4ad98e0dfc4826965588fbb5ef7eb07af2724935226a60471a336",
+          "started_at": "2026-11-24T15:14:00.566Z",
+          "finished_at": "2026-11-24T15:14:03.955Z",
+          "outputs": {
+            "stdout.log": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/regression_checks-2026-11-24T15-14-00-566Z/stdout.log",
+            "stderr.log": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/regression_checks-2026-11-24T15-14-00-566Z/stderr.log",
+            "actual.png": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/regression_checks-2026-11-24T15-14-00-566Z/actual.png",
+            "full.png": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/regression_checks-2026-11-24T15-14-00-566Z/full.png"
+          }
+        }
+      ],
+      "quality_gate_rows": [],
+      "evidence": [
+        {
+          "artifact_id": "ev_0f555e0b0fb14d10939c61060ceadee9",
+          "kind": "execution",
+          "path": "${DATA}\\gate-runs\\gate-runs\\rev_0e95f589cf774cdf9d82a7687eadca92\\functional_correctness-2026-11-24T15-13-58-063Z\\result.json",
+          "sha256": "0095be951d19f9b1cb8d389f6fe4a89085110845f057e77078574e8039911478",
+          "bytes": 3754,
+          "producer": "helldesk-gate-runner"
+        },
+        {
+          "artifact_id": "ev_5a730fe8bf90477b98834f1cf7cf31be",
+          "kind": "source",
+          "path": "src/styles.css",
+          "sha256": "b71698b956610290f546f086e4730b6e00fcb68be5ccd089bb81d0d037f83785",
+          "bytes": 1552,
+          "producer": "kilo-mutation"
+        },
+        {
+          "artifact_id": "ev_624b137c7a674ff6b73b753e26cb567f",
+          "kind": "execution",
+          "path": "${DATA}\\gate-runs\\gate-runs\\rev_0e95f589cf774cdf9d82a7687eadca92\\artifact_provenance-2026-11-24T15-13-57-814Z\\result.json",
+          "sha256": "fbbfa2422814ec4e1a56f96bc77416aa6d9cbd04c9992222871b2213fedfc716",
+          "bytes": 1765,
+          "producer": "helldesk-gate-runner"
+        },
+        {
+          "artifact_id": "ev_ef38fd11a6b44c1c9a5a0304a6834292",
+          "kind": "execution",
+          "path": "${DATA}\\gate-runs\\gate-runs\\rev_0e95f589cf774cdf9d82a7687eadca92\\regression_checks-2026-11-24T15-14-00-566Z\\result.json",
+          "sha256": "71f9d2fe606628e9fdc925b370dc85696f3519e575a98abea2d5a839602d7f4c",
+          "bytes": 3744,
+          "producer": "helldesk-gate-runner"
+        }
+      ],
+      "snapshot": null,
+      "review": {
+        "job_id": "job_efeedab270ba4846b2b24bec",
+        "state": "ADJUDICATING",
+        "result": null,
+        "requested_at": "2026-11-24T15:14:05.654Z",
+        "completed_at": null,
+        "coverage": null,
+        "attempts": [
+          {
+            "attempt_no": 1,
+            "state": "running",
+            "started_at": "2026-11-24T15:14:05.687Z",
+            "finished_at": null
+          }
+        ],
+        "runs": [
+          {
+            "role": "reviewer-a",
+            "status": "succeeded",
+            "provider_id": "cyberluke",
+            "model_id": "deepseek-ai--deepseek-v41-flash-1017",
+            "started_at": "2026-11-24T15:14:05.819Z",
+            "finished_at": "2026-11-24T15:15:19.135Z",
+            "tokens_in": null,
+            "tokens_out": null
+          },
+          {
+            "role": "reviewer-b",
+            "status": "succeeded",
+            "provider_id": "cyberluke",
+            "model_id": "deepseek-ai--deepseek-v41-flash-1017",
+            "started_at": "2026-11-24T15:14:05.899Z",
+            "finished_at": "2026-11-24T15:16:30.245Z",
+            "tokens_in": null,
+            "tokens_out": null
+          }
+        ],
+        "files": {}
+      },
+      "repair_plan": null
+    }
+  ],
+  "workspaceAtExport": {
+    "head": "06f5c252ac792a833e80056ab032021435e10616",
+    "head_tree": "e1647c8a304f8bc43dc38c5e7ce15e2b88c10bc2",
+    "head_subject": "fix(pricing-card): render CTA in normal flow",
+    "head_committed_at": "2026-11-24T16:12:35+01:00",
+    "tree": "e1647c8a304f8bc43dc38c5e7ce15e2b88c10bc2",
+    "status_porcelain": "",
+    "reflog": [
+      {
+        "commit": "06f5c252ac792a833e80056ab032021435e10616",
+        "time": "2026-11-24 16:12:35 +0100",
+        "subject": "commit: fix(pricing-card): render CTA in normal flow"
+      },
+      {
+        "commit": "b392d7f1f6fcc5146debde147c60d880d7d4be9b",
+        "time": "2026-11-24 16:04:21 +0100",
+        "subject": "commit (initial): Initialize workspace (seeded pricing-card defect)"
+      }
+    ]
+  },
+  "certification": {
+    "certified": false,
+    "certificationValid": false,
+    "reason": "mission state is CANCELLED, not VERIFIED_10_10",
+    "verifiedRevisions": []
+  },
+  "artifacts": [
+    {
+      "id": "gate-result-0001",
+      "kind": "gate-result",
+      "source": "${DATA}\\gate-runs\\gate-runs\\rev_0e95f589cf774cdf9d82a7687eadca92\\artifact_provenance-2026-11-24T15-13-57-814Z\\result.json",
+      "bundlePath": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/artifact_provenance-2026-11-24T15-13-57-813Z/result.json",
+      "sha256": "fbbfa2422814ec4e1a56f96bc77416aa6d9cbd04c9992222871b2213fedfc716",
+      "bytes": 1765,
+      "sourceSha256": "fbbfa2422814ec4e1a56f96bc77416aa6d9cbd04c9992222871b2213fedfc716"
+    },
+    {
+      "id": "gate-output-0002",
+      "kind": "gate-output",
+      "source": "${DATA}\\gate-runs\\gate-runs\\rev_0e95f589cf774cdf9d82a7687eadca92\\artifact_provenance-2026-11-24T15-13-57-814Z\\stdout.log",
+      "bundlePath": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/artifact_provenance-2026-11-24T15-13-57-813Z/stdout.log",
+      "sha256": "1fb3cdbbd736f809c908bdfea5b37f4c483d9e112a04e103f3fdc93885f51e68",
+      "bytes": 31,
+      "sourceSha256": "1fb3cdbbd736f809c908bdfea5b37f4c483d9e112a04e103f3fdc93885f51e68"
+    },
+    {
+      "id": "gate-output-0003",
+      "kind": "gate-output",
+      "source": "${DATA}\\gate-runs\\gate-runs\\rev_0e95f589cf774cdf9d82a7687eadca92\\artifact_provenance-2026-11-24T15-13-57-814Z\\stderr.log",
+      "bundlePath": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/artifact_provenance-2026-11-24T15-13-57-813Z/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "sourceSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "gate-result-0004",
+      "kind": "gate-result",
+      "source": "${DATA}\\gate-runs\\gate-runs\\rev_0e95f589cf774cdf9d82a7687eadca92\\functional_correctness-2026-11-24T15-13-58-063Z\\result.json",
+      "bundlePath": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/functional_correctness-2026-11-24T15-13-58-063Z/result.json",
+      "sha256": "819e438291d9bd0b8d8272424f2127d1ae591b5e3c032eb10595224bf401d2f4",
+      "bytes": 3644,
+      "sourceSha256": "0095be951d19f9b1cb8d389f6fe4a89085110845f057e77078574e8039911478"
+    },
+    {
+      "id": "gate-output-0005",
+      "kind": "gate-output",
+      "source": "${DATA}\\gate-runs\\gate-runs\\rev_0e95f589cf774cdf9d82a7687eadca92\\functional_correctness-2026-11-24T15-13-58-063Z\\stdout.log",
+      "bundlePath": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/functional_correctness-2026-11-24T15-13-58-063Z/stdout.log",
+      "sha256": "588f84f68ec014157f4e4cb4e252d855c9d892db771426ff22120e9d902278e5",
+      "bytes": 1105,
+      "sourceSha256": "064580f19a7c6c13ec5f1d94b864219bdf6015c45e90eef04ce619261972c8c3"
+    },
+    {
+      "id": "gate-output-0006",
+      "kind": "gate-output",
+      "source": "${DATA}\\gate-runs\\gate-runs\\rev_0e95f589cf774cdf9d82a7687eadca92\\functional_correctness-2026-11-24T15-13-58-063Z\\stderr.log",
+      "bundlePath": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/functional_correctness-2026-11-24T15-13-58-063Z/stderr.log",
+      "sha256": "d84ff43ad3c4ad98e0dfc4826965588fbb5ef7eb07af2724935226a60471a336",
+      "bytes": 33,
+      "sourceSha256": "d84ff43ad3c4ad98e0dfc4826965588fbb5ef7eb07af2724935226a60471a336"
+    },
+    {
+      "id": "gate-output-0007",
+      "kind": "gate-output",
+      "source": "${DATA}\\gate-runs\\gate-runs\\rev_0e95f589cf774cdf9d82a7687eadca92\\functional_correctness-2026-11-24T15-13-58-063Z\\actual.png",
+      "bundlePath": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/functional_correctness-2026-11-24T15-13-58-063Z/actual.png",
+      "sha256": "697fe7795bafda0e4afba48bd8c1d3daa34b60874c370d41683c8b8e53fd2126",
+      "bytes": 25372,
+      "sourceSha256": "697fe7795bafda0e4afba48bd8c1d3daa34b60874c370d41683c8b8e53fd2126"
+    },
+    {
+      "id": "gate-output-0008",
+      "kind": "gate-output",
+      "source": "${DATA}\\gate-runs\\gate-runs\\rev_0e95f589cf774cdf9d82a7687eadca92\\functional_correctness-2026-11-24T15-13-58-063Z\\full.png",
+      "bundlePath": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/functional_correctness-2026-11-24T15-13-58-063Z/full.png",
+      "sha256": "c128c80a2e4ac11914d8a6e00d5d312244829b6a216a226267f780638d0de793",
+      "bytes": 23429,
+      "sourceSha256": "c128c80a2e4ac11914d8a6e00d5d312244829b6a216a226267f780638d0de793"
+    },
+    {
+      "id": "gate-result-0009",
+      "kind": "gate-result",
+      "source": "${DATA}\\gate-runs\\gate-runs\\rev_0e95f589cf774cdf9d82a7687eadca92\\regression_checks-2026-11-24T15-14-00-566Z\\result.json",
+      "bundlePath": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/regression_checks-2026-11-24T15-14-00-566Z/result.json",
+      "sha256": "51018960ac28b82573f80bf7ac5935c99b0df92cf8fd639430246ddc3ceb6ca5",
+      "bytes": 3634,
+      "sourceSha256": "71f9d2fe606628e9fdc925b370dc85696f3519e575a98abea2d5a839602d7f4c"
+    },
+    {
+      "id": "gate-output-0010",
+      "kind": "gate-output",
+      "source": "${DATA}\\gate-runs\\gate-runs\\rev_0e95f589cf774cdf9d82a7687eadca92\\regression_checks-2026-11-24T15-14-00-566Z\\stdout.log",
+      "bundlePath": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/regression_checks-2026-11-24T15-14-00-566Z/stdout.log",
+      "sha256": "3a54b319c8251b4b0c3c59f17670fb5235552366aa1f1bff6fb7a1e7d9d080b0",
+      "bytes": 1100,
+      "sourceSha256": "8f042d9892e7b8b7de9033433ba9b1f33b29253111b9c16c5887ef3c89634097"
+    },
+    {
+      "id": "gate-output-0011",
+      "kind": "gate-output",
+      "source": "${DATA}\\gate-runs\\gate-runs\\rev_0e95f589cf774cdf9d82a7687eadca92\\regression_checks-2026-11-24T15-14-00-566Z\\stderr.log",
+      "bundlePath": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/regression_checks-2026-11-24T15-14-00-566Z/stderr.log",
+      "sha256": "d84ff43ad3c4ad98e0dfc4826965588fbb5ef7eb07af2724935226a60471a336",
+      "bytes": 33,
+      "sourceSha256": "d84ff43ad3c4ad98e0dfc4826965588fbb5ef7eb07af2724935226a60471a336"
+    },
+    {
+      "id": "gate-output-0012",
+      "kind": "gate-output",
+      "source": "${DATA}\\gate-runs\\gate-runs\\rev_0e95f589cf774cdf9d82a7687eadca92\\regression_checks-2026-11-24T15-14-00-566Z\\actual.png",
+      "bundlePath": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/regression_checks-2026-11-24T15-14-00-566Z/actual.png",
+      "sha256": "697fe7795bafda0e4afba48bd8c1d3daa34b60874c370d41683c8b8e53fd2126",
+      "bytes": 25372,
+      "sourceSha256": "697fe7795bafda0e4afba48bd8c1d3daa34b60874c370d41683c8b8e53fd2126"
+    },
+    {
+      "id": "gate-output-0013",
+      "kind": "gate-output",
+      "source": "${DATA}\\gate-runs\\gate-runs\\rev_0e95f589cf774cdf9d82a7687eadca92\\regression_checks-2026-11-24T15-14-00-566Z\\full.png",
+      "bundlePath": "artifacts/gates/rev_0e95f589cf774cdf9d82a7687eadca92/regression_checks-2026-11-24T15-14-00-566Z/full.png",
+      "sha256": "c128c80a2e4ac11914d8a6e00d5d312244829b6a216a226267f780638d0de793",
+      "bytes": 23429,
+      "sourceSha256": "c128c80a2e4ac11914d8a6e00d5d312244829b6a216a226267f780638d0de793"
+    }
+  ]
+}

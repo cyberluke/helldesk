@@ -1,0 +1,57 @@
+{
+  "gateKey": "artifact_provenance",
+  "revisionId": "rev_bdaae306c1144dc49865482984a1916b",
+  "candidateHash": "47ba7769af4220a6602d28f5868278eaae6b14af",
+  "command": "git status --porcelain",
+  "cwd": ".",
+  "status": "PASS",
+  "exitCode": 0,
+  "durationMs": 59,
+  "browser": null,
+  "stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "envFingerprint": "1f06bcc91a2e854b319f064d378170eeeee5ba36998b69922b3e7c27746a4eac",
+  "testFileHashes": {
+    "bun.lock": "fcea7fea823a798c413b7c871eb3745e9a1495092f391952bfd404ac770c6199",
+    "package.json": "9e04872cc10d2318228bbe3ab60831be0c06a8a7572a7dbdfac186fa78283bd3",
+    "tests/golden/pricing-card.png": "5fa25647458cf2273d86b3dc00865644c1bee047d87075f4cab078dbf7f48dd0",
+    "tsconfig.json": "504797b8ae1f8940c64684fb556fb1c7091a9b7dade7928fb872c8b8108094c2",
+    "vite.config.ts": "b73d01b2d2c72ae61f353efeaf9e7d9648ef311631b3ea0f8a84c1f71b7f8f42"
+  },
+  "protectedPaths": [
+    "**/*.test.*",
+    "**/*.spec.*",
+    "**/test/**",
+    "**/tests/**",
+    "**/__tests__/**",
+    "**/test.mjs",
+    "**/test.js",
+    "**/test.ts",
+    "**/server.test.*",
+    "**/index.test.*",
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "bun.lock",
+    "bun.lockb",
+    "yarn.lock",
+    "tsconfig.json",
+    "**/vite.config.*",
+    "**/vitest.config.*",
+    "**/jest.config.*",
+    ".github/workflows/**"
+  ],
+  "protectedChanged": [],
+  "protectedAllowed": [],
+  "baselinePresent": true,
+  "missingArtifacts": [],
+  "error": null,
+  "startedAt": "2026-11-24T13:11:41.311Z",
+  "finishedAt": "2026-11-24T13:11:41.371Z"
+}

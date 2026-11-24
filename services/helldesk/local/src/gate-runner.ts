@@ -518,6 +518,28 @@ export function materializeCandidate(opts: {
 
   if (opts.linkDependencies !== false) linkNodeModules(workspacePath, treeRoot);
 
+  // Make the candidate a REAL clean git snapshot. Gate commands that inspect
+  // provenance (`git status --porcelain`) must observe the candidate itself:
+  // before this, an extracted tree with no `.git` resolved to an enclosing
+  // repository (false pass) or errored "not a git repository" (false fail when
+  // the run lives outside the repo). The commit is local to the throwaway
+  // worktree and never touches the operator's workspace.
+  try {
+    const gitEnv = { ...(process.env as Record<string, string>) };
+    runGit(['init', '-q'], treeRoot, gitEnv);
+    // node_modules is a build dependency junction, not candidate source.
+    try {
+      mkdirSync(join(treeRoot, '.git', 'info'), { recursive: true });
+      writeFileSync(join(treeRoot, '.git', 'info', 'exclude'), 'node_modules/\n', { flag: 'a' });
+    } catch { /* best effort */ }
+    runGit(['add', '-A'], treeRoot, gitEnv);
+    runGit(
+      ['-c', 'user.name=HELLDESK', '-c', 'user.email=helldesk@localhost', 'commit', '-qm', 'candidate snapshot'],
+      treeRoot,
+      gitEnv,
+    );
+  } catch { /* git unavailable: gates fail honestly rather than silently pass */ }
+
   return {
     candidateHash: usedGit ? candidateHash : `fs:${candidateHash}`,
     worktreePath: treeRoot,

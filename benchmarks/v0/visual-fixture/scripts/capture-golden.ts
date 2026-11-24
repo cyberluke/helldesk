@@ -46,15 +46,13 @@ const server = startAppServer({
 });
 const client = new BrowserosClient({ url: resolveBrowserosMcpUrl(), clientName: 'helldesk-golden' });
 let pageId: number | null = null;
-let warmupPageId: number | null = null;
 try {
   const ready = await waitForHttp(url, 60_000);
   if (!ready) throw new Error(`vite did not start\n${server.logs().slice(-2000)}`);
   await client.connect();
   await client.nameSession('helldesk golden');
-  warmupPageId = await client.newPage(url);
   pageId = await client.newPage(url);
-  await client.bringToFront(pageId);
+  await client.focusForCapture(pageId);
   const stageReady = await client.waitForSelector(pageId, '[data-testid=stage]', 15_000);
   if (!stageReady) throw new Error('stage did not appear within 15s');
   // Use the same capture path as the gate: set the 1280x720 viewport and
@@ -75,7 +73,6 @@ try {
   console.log(`WORKSPACE=${workspace}`);
 } finally {
   if (pageId !== null) await client.closePage(pageId).catch(() => undefined);
-  if (warmupPageId !== null) await client.closePage(warmupPageId).catch(() => undefined);
   server.stop();
 }
 

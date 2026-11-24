@@ -1,0 +1,102 @@
+{
+  "gateKey": "functional_correctness",
+  "revisionId": "rev_262be2e935e14fe0a382b1ec837c8a3f",
+  "candidateHash": "8bdcfe8dee04334008261a7f6a2c0ac6b5cb3896",
+  "command": "browser-gate:http://127.0.0.1:49397/",
+  "cwd": ".",
+  "status": "FAIL",
+  "exitCode": 1,
+  "durationMs": 4271,
+  "browser": {
+    "url": "http://127.0.0.1:49397/",
+    "port": 49397,
+    "sessionId": "546088d4-53b8-4481-a792-53ce378f0e0d",
+    "pageId": 150,
+    "checks": [
+      {
+        "type": "selectorInViewport",
+        "selector": "[data-testid=cta]",
+        "ok": true,
+        "detail": {
+          "ok": true,
+          "rect": {
+            "bottom": 582.7890625,
+            "left": 672,
+            "right": 788.0078125,
+            "top": 546.7890625
+          }
+        }
+      },
+      {
+        "type": "clickText",
+        "selector": "[data-testid=cta]",
+        "expectSelector": "[data-testid=toast]",
+        "expected": "Plan selected",
+        "actual": "Plan selected",
+        "ok": true
+      }
+    ],
+    "visual": {
+      "ok": false,
+      "golden": "${DATA}\\gate-runs\\gate-worktrees\\rev_262be2e935e14fe0a382b1ec837c8a3f\\tree\\tests\\golden\\pricing-card.png",
+      "actual": "${DATA}\\gate-runs\\gate-runs\\rev_262be2e935e14fe0a382b1ec837c8a3f\\functional_correctness-2026-11-24T14-13-01-416Z\\actual.png",
+      "diff": null,
+      "ratio": null,
+      "threshold": 0.002,
+      "reason": "size mismatch actual 570x570, golden 565x566 (tolerance 2px)",
+      "sizeDelta": {
+        "width": 5,
+        "height": 4,
+        "tolerancePx": 2
+      }
+    },
+    "serverLog": "$ vite build\nvite v8.3.8 building client environment for production...\ntransforming...\n✓ 16 modules transformed.\nrendering chunks...\ncomputing gzip size...\ndist/index.html                   0.40 kB │ gzip:  0.27 kB\ndist/assets/index-ckQqhbFM.css    1.14 kB │ gzip:  0.51 kB\ndist/assets/index-CXpWwFXu.js   220.96 kB │ gzip: 69.19 kB\n\n✓ built in 104ms\n$ vite preview --host \"127.0.0.1\" --port \"49397\" --strictPort\n  ➜  Local:   http://127.0.0.1:49397/\n",
+    "error": "visual diff size-mismatch > 0.002"
+  },
+  "stdout": {
+    "sha256": "5af2c1edd348fea631716c4fa54dfe033b467c8280a0bb7a309931ccb92634be",
+    "bytes": 1209
+  },
+  "stderr": {
+    "sha256": "d84ff43ad3c4ad98e0dfc4826965588fbb5ef7eb07af2724935226a60471a336",
+    "bytes": 33
+  },
+  "envFingerprint": "1f06bcc91a2e854b319f064d378170eeeee5ba36998b69922b3e7c27746a4eac",
+  "testFileHashes": {
+    "bun.lock": "fcea7fea823a798c413b7c871eb3745e9a1495092f391952bfd404ac770c6199",
+    "package.json": "9e04872cc10d2318228bbe3ab60831be0c06a8a7572a7dbdfac186fa78283bd3",
+    "tests/golden/pricing-card.png": "5fa25647458cf2273d86b3dc00865644c1bee047d87075f4cab078dbf7f48dd0",
+    "tsconfig.json": "504797b8ae1f8940c64684fb556fb1c7091a9b7dade7928fb872c8b8108094c2",
+    "vite.config.ts": "b73d01b2d2c72ae61f353efeaf9e7d9648ef311631b3ea0f8a84c1f71b7f8f42"
+  },
+  "protectedPaths": [
+    "**/*.test.*",
+    "**/*.spec.*",
+    "**/test/**",
+    "**/tests/**",
+    "**/__tests__/**",
+    "**/test.mjs",
+    "**/test.js",
+    "**/test.ts",
+    "**/server.test.*",
+    "**/index.test.*",
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "bun.lock",
+    "bun.lockb",
+    "yarn.lock",
+    "tsconfig.json",
+    "**/vite.config.*",
+    "**/vitest.config.*",
+    "**/jest.config.*",
+    ".github/workflows/**"
+  ],
+  "protectedChanged": [],
+  "protectedAllowed": [],
+  "baselinePresent": true,
+  "missingArtifacts": [],
+  "error": "visual diff size-mismatch > 0.002",
+  "startedAt": "2026-11-24T14:13:01.416Z",
+  "finishedAt": "2026-11-24T14:13:06.142Z"
+}
