@@ -187,22 +187,41 @@ bundle is exported as a finding (exit 1), never as a success.
 # 1. Prepare an isolated run (fails if another instance owns a benchmark mission)
 pwsh -File benchmarks/m6/prepare-run.ps1 -RunId m6c -Port 4795
 
-# 2. Start the isolated control plane + dashboard (two terminals)
-bun run services/helldesk/local/src/main.ts --config .local/benchmark/m6c/live.config.json
-$env:HELLDESK_CONTROL_CONFIG="$PWD\.local\benchmark\m6c\live.config.json"
-$env:HELLDESK_PORT="8793"
-$env:HELLDESK_DATA_ROOT="$PWD\.local\benchmark\m6c\local-live"
-bun run services/helldesk/local-live/src/entry.ts
+# 2. Start the control plane + dashboard with the PRODUCT automation.
+#    Both write pidfiles; stop signals only the recorded PID after verifying its
+#    command line still matches. Never kill by image name (kilo.exe belongs to the
+#    VS Code extension too).
+pwsh -File services/helldesk/local/scripts/start.ps1 `
+  -Config .local/benchmark/m6c/live.config.json
+pwsh -File services/helldesk/local-live/scripts/launch-dashboard-hidden.ps1 `
+  -Root services/helldesk/local-live -Port 8792 `
+  -ControlConfig .local/benchmark/m6c/live.config.json `
+  -DataRoot .local/benchmark/m6c/local-live `
+  -PidFile .local/benchmark/m6c/dashboard.pid
 
 # 3. Register the workspace and create the mission
-#    POST http://127.0.0.1:8793/api/v1/workspaces/register  { "path": "<workspace>" }
-#    POST http://127.0.0.1:8793/api/v1/missions             (body from .local/benchmark/m6c/mission.request.json)
+#    POST http://127.0.0.1:8792/api/v1/workspaces/register  { "path": "<workspace>" }
+#    POST http://127.0.0.1:8792/api/v1/missions             (body from .local/benchmark/m6c/mission.request.json)
 
 # 4. Export + audit
 bun run benchmarks/m6/export-evidence.ts --db .local/benchmark/m6c/live-data/helldesk.db `
   --run-id m6c --workspace .local/benchmark/m6c/live-workspace --out benchmarks/m6/evidence/m6c
 bun run benchmarks/m6/verify-bundle.ts benchmarks/m6/evidence/m6c
+
+# 5. Stop exactly this run (pidfile + command-line identity; dry-run first if unsure)
+pwsh -File services/helldesk/local/scripts/stop-daemon.ps1 `
+  -Config .local/benchmark/m6c/live.config.json -DryRun
+pwsh -File services/helldesk/local/scripts/stop-daemon.ps1 `
+  -Config .local/benchmark/m6c/live.config.json
+pwsh -File services/helldesk/local-live/scripts/stop-dashboard.ps1 `
+  -PidFile .local/benchmark/m6c/dashboard.pid
 ```
+
+Process-control contract (enforced by the scripts): a process is only signalled
+if its PID is in the instance pidfile **and** its live command line still
+contains `main.ts` + that config path (or `entry.ts` for the dashboard). A
+recycled PID is refused and reported. There is no name scan and no wildcard
+kill anywhere in the lifecycle.
 
 ## Honest gaps
 
@@ -213,8 +232,10 @@ bun run benchmarks/m6/verify-bundle.ts benchmarks/m6/evidence/m6c
   of the candidate; the gate result is therefore weak provenance. The browser gates
   and the candidate-tree hash are the authoritative evidence.
 * The Kilo mutation runner's exported model can keep working after its prompt
-  resolves; the candidate-binding guard now catches the resulting drift, but the
-  writer itself is not yet fenced at the process level.
-* Run A's `INCONCLUSIVE` reviews show the adjudication packet did not include the
-  implementation render + executed test summary. That packet gap remains a
-  reviewer-quality issue separate from the certification fix.
+  resolves; the candidate-binding guard catches the resulting drift, but the
+  writer itself is not yet fenced at the process level. (Its `kilo serve` child is
+  closed by the runner; the observed long tail was the model's own turn.)
+* Run A/B's `INCONCLUSIVE` reviews exposed an adjudicator packet gap (the A/B
+  override replaced the frozen evidence prompt). Fixed in `6590ce81`: the override
+  is a preamble and the diff/files/requirements follow it. Run C exercises the
+  fixed packet.

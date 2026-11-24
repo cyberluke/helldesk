@@ -1,18 +1,38 @@
-# HELLDESK Local — start (attach-or-launch persistent daemon)
-# If a control plane is already listening on the configured port, this connects
+# HELLDESK Local — start (attach-or-launch one control-plane instance)
+#
+# If a control plane is already listening on the configured port, this attaches
 # as a client (health check) and returns. Otherwise it starts the persistent
 # daemon detached (independent of this console / any VS Code window), waits for
-# a healthy /health, and returns its PID.
+# a healthy /health, and returns.
+#
+# Instance-aware: -Config selects the config (default services/helldesk/local/config.json).
+# The logon scheduled task is used ONLY for the default production config; an
+# isolated config is launched through daemon-hidden.ps1 -Config, which writes a
+# pidfile inside that config's dataDir (stop-daemon.ps1 -Config stops exactly it).
+#
+# Usage:
+#   start.ps1
+#   start.ps1 -Config <path>
+param(
+    [string]$Config
+)
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = Split-Path -Parent $here
 
-$cfg = Join-Path $root "config.json"
-if (-not (Test-Path $cfg)) {
-    Copy-Item (Join-Path $root "config.example.json") $cfg
-    Write-Host "[start] No config.json found; created from config.example.json. Edit policy.runner/reviewerModel before real reviews." -ForegroundColor Yellow
+$defaultCfg = Join-Path $root "config.json"
+if (-not $Config) { $Config = $defaultCfg }
+if (-not (Test-Path -LiteralPath $Config)) {
+    if ($Config -eq $defaultCfg) {
+        Copy-Item (Join-Path $root "config.example.json") $Config
+        Write-Host "[start] No config.json found; created from config.example.json. Edit policy.runner/reviewerModel before real reviews." -ForegroundColor Yellow
+    } else {
+        Write-Error "[start] config not found: $Config"
+        exit 2
+    }
 }
-$port = (Get-Content $cfg | ConvertFrom-Json).daemon.port
+$cfg = Get-Content -LiteralPath $Config -Raw | ConvertFrom-Json
+$port = $cfg.daemon.port
 $healthUrl = "http://127.0.0.1:$port/health"
 
 # 1) Attach if already running.
@@ -25,18 +45,18 @@ try {
 }
 
 # 2) Launch detached, headless (no console window ever). Prefer the scheduled
-#    task if registered (idempotent, keeps it alive across reboots); the task
-#    now launches through the zero-window VBS/Hidden wrapper. Fallback path uses
-#    the same hidden launcher so manual starts are equally windowless.
+#    task for the production config (idempotent, survives reboots); an isolated
+#    config always uses the hidden launcher with that exact config.
 $taskName = "HellDeskControlPlane"
-if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
+$isDefault = ($Config -eq $defaultCfg)
+if ($isDefault -and (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)) {
     Start-ScheduledTask -TaskName $taskName
 } else {
-    & (Join-Path $here "daemon-hidden.ps1") -Config $cfg | Out-Null
+    & (Join-Path $here "daemon-hidden.ps1") -Config $Config | Out-Null
 }
 
 # 3) Wait for health (bounded, so we fail fast on real errors).
-$deadline = (Get-Date).AddSeconds(15)
+$deadline = (Get-Date).AddSeconds(20)
 do {
     Start-Sleep -Milliseconds 300
     try {
