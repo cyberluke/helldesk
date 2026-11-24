@@ -862,4 +862,3 @@ const TS_CSS = `
 .spin { animation: tspin 0.8s linear infinite; }
 @keyframes tspin { to { transform: rotate(360deg); } }
 `
-
