@@ -200,3 +200,7 @@ produced them; `results.json` is the committed, path-free summary.
 | Implementation plan | `benchmarks/v0/PLAN.md` |
 | Dashboard/BrowserOS recipe | `benchmarks/v0/dashboard/README.md` |
 | M2/M3 gate code | `services/helldesk/local/src/browser-gate.ts`, `browseros-client.ts` |
+> **M6 update (2026-11-24):** the fixture golden was regenerated through the production
+> BrowserOS path at the declared 460×460 stage geometry (1280×720, DPR 1). The
+> `565×566` figures above are historical v0 captures from the original golden; the v0
+> proof databases are unchanged.

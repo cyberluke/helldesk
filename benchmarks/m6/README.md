@@ -16,9 +16,10 @@ evidence. No Playwright, no separate Chrome automation stack.
 * Engine matrix: mutation / review / adjudicate all
   `cyberluke/deepseek-ai--deepseek-v41-flash-1017` through the Kilo runner.
 
-Run A is the live run that **found a real false certification**. Run B is the
-post-fix run on the repaired engine. Both use isolated control planes and data
-dirs; production (`:4790/:8790`) is never touched.
+Runs A–K are the detection series; run L is the verified showcase. Every run uses an
+isolated control plane and data dir; production (`:4790/:8790`) is never touched.
+
+**Start the infra yourself:** [../../HOWTO.md](../../HOWTO.md)
 
 ---
 
@@ -104,9 +105,13 @@ exposed a real defect, and each was fixed before the next run.
 | A `m6a` | rev1 FAIL, rev2 PASS | A PASS, B FINDINGS/INCONCLUSIVE | **false VERIFIED_10_10** | verification not bound to the gate candidate + a second control plane mutating the workspace → candidate-binding guard + cross-instance isolation |
 | B `m6b` | all PASS | A/B PASS, adjudicator INCONCLUSIVE | fail-closed, replanned | A/B override **replaced** the adjudicator's evidence prompt → evidence appended |
 | C `m6c` | all PASS (rev2) | both reviewers BLOCKER | rejected | a staged-only edit produced a 0-byte frozen diff → staged+unstaged patch; the 4a replan re-mutated the rejected revision → return after replan |
-| E/F `m6e/f` | visual size mismatch | — | rejected | the golden was captured at the window scale (565x566), not the declared 460x460 stage → regenerated through the production capture path |
-| G/H `m6g/h` | visual size mismatch | — | rejected | full-surface capture inherited the operator window/zoom (368x368) → CDP viewport + visible-size pin; a direct CDP clip was blank on this build and rejected |
-| I/J `m6i/j` | all PASS | A/B INCONCLUSIVE, coverage 0 | rejected | the dirty patch was dropped when `baseHash` is null → always included; the detached worker dropped the evidence for the adjudicator → composed |
+| D `m6d` | functional ERROR | — | aborted | the MCP `screenshot` tool wedged on a background tab ("returned no envelope") → CDP capture |
+| E `m6e` | visual size mismatch | — | rejected | the golden was captured at the window scale (565x566), not the declared 460x460 stage → regenerated through the production capture path |
+| F `m6f` | functional/regression PASS, provenance FAIL | — | rejected | `git status` in the extracted candidate had no repository → the materializer creates a clean local git snapshot |
+| G `m6g` | visual size mismatch | — | rejected | a full-surface capture inherited the operator window/zoom (368x368) → CDP viewport + visible-size pin (a direct clip was blank and rejected) |
+| H `m6h` | visual diff 3.6% | — | rejected | clip and full+crop captures differed subpixel-wise → the golden and the gate use the same pinned-surface crop |
+| I `m6i` | all PASS | A/B PASS, adjudicator coverage 0 | rejected | the detached worker used the A/B override as the entire adjudicator prompt → evidence composed |
+| J `m6j` | all PASS | A/B INCONCLUSIVE, coverage 0 | rejected | a dirty patch was dropped when `baseHash` is null → the patch is always part of the frozen diff |
 | K `m6k` | all PASS | A/B/adj **PASS**, coverage 1/1 | **still rejected** | the terminal-job fast path returned `gatePassed={}` → reconstructed from persisted executions |
 | L `m6l` | all PASS | A/B/adj PASS | **VERIFIED_10_10** | — |
 
