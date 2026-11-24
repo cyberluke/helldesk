@@ -23,7 +23,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runKiloInference } from './kilo-headless';
-import { extractJsonObject, ReviewerParseSchema } from './reviewers';
+import { composeReviewUserPrompt, extractJsonObject, ReviewerParseSchema } from './reviewers';
 import { createCodexRunner } from './inference';
 import { loadConfig } from './config';
 import {
@@ -176,9 +176,14 @@ async function main(): Promise<void> {
   const diffBody = diff.length > diffBudget
     ? `${diff.slice(0, diffBudget)}\n\n[diff truncated: showing ${diffBudget} of ${diff.length} chars — context tier ${budget.tier} (${budget.contextWindow} tokens). Report uncovered evidence honestly.]`
     : diff;
-  const user = userOverride && role === 'adjudicator'
-    ? userOverride
-    : [promptHead, diffBody, promptTail].join('\n');
+  const evidence = [promptHead, diffBody, promptTail].join('\n');
+  // The adjudicator's A/B preamble is a PREAMBLE, not a replacement: it must
+  // still receive the requirements, changed-file list and frozen diff. Dropping
+  // them produced `coverage: {changedFiles:0}` and a permanent INCONCLUSIVE
+  // (M6 run I).
+  const user = role === 'adjudicator'
+    ? composeReviewUserPrompt(evidence, userOverride)
+    : evidence;
 
   // Execute inference.
   const t0 = Date.now();
