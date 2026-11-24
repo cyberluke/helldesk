@@ -412,6 +412,30 @@ export class BrowserosClient {
    * desktop. `Page.captureScreenshot` with `fromSurface` renders the page's own
    * surface, so a background tab captures correctly with the window untouched.
    */
+  /**
+   * Capture an exact CLIP (CSS px) at scale 1. Unlike a full-surface capture,
+   * this is immune to the operator window size and browser zoom: Chromium
+   * renders the clip rectangle at the requested scale, so the stage image is
+   * always stageRect.width x stageRect.height. Deterministic visual evidence.
+   */
+  async screenshotCdpClip(
+    pageId: number,
+    rect: { x: number; y: number; width: number; height: number },
+    scale = 1,
+  ): Promise<string> {
+    const x = Math.max(0, Math.round(rect.x));
+    const y = Math.max(0, Math.round(rect.y));
+    const width = Math.max(1, Math.round(rect.width));
+    const height = Math.max(1, Math.round(rect.height));
+    const result = await this.run(
+      `const page = browser.page(${pageId});` +
+      `const shot = await page.cdp('Page.captureScreenshot', JSON.stringify({ format: 'png', fromSurface: true, captureBeyondViewport: false, clip: { x: ${x}, y: ${y}, width: ${width}, height: ${height}, scale: ${scale} } }));` +
+      `return { data: shot && shot.data ? shot.data : null };`,
+    ) as { data?: string | null } | null;
+    if (!result?.data) throw new Error('CDP clip screenshot returned no image data');
+    return result.data;
+  }
+
   async screenshotCdp(pageId: number): Promise<string> {
     const result = await this.run(
       `const page = browser.page(${pageId});` +

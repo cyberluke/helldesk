@@ -12,7 +12,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BrowserosClient, resolveBrowserosMcpUrl } from '../../../../services/helldesk/local/src/browseros-client';
-import { cropStageScreenshot, freePort, startAppServer, waitForHttp } from '../../../../services/helldesk/local/src/browser-gate';
+import { freePort, startAppServer, waitForHttp } from '../../../../services/helldesk/local/src/browser-gate';
 
 const repoRoot = process.cwd();
 const fixture = join(repoRoot, 'benchmarks', 'v0', 'visual-fixture');
@@ -66,7 +66,7 @@ try {
   });
   if (!value?.screenshot || !value.stageRect) throw new Error('BrowserOS returned no screenshot/stageRect');
   mkdirSync(join(fixture, 'tests', 'golden'), { recursive: true });
-  const bytes = cropStageScreenshot(value.screenshot, value.stageRect, value.viewport);
+  const bytes = Buffer.from(await client.screenshotCdpClip(pageId, value.stageRect, 1), 'base64');
   writeFileSync(goldenPath, bytes);
   console.log(`GOLDEN=${goldenPath}`);
   console.log(`BYTES=${bytes.length}`);
