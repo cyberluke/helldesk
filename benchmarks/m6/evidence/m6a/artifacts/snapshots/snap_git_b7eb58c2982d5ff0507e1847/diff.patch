@@ -1,0 +1,80 @@
+diff --git a/src/styles.css b/src/styles.css
+index 4f2d32f..9ff1a00 100644
+--- a/src/styles.css
++++ b/src/styles.css
+@@ -27,6 +27,10 @@ body {
+   display: grid;
+   place-items: center;
+   background: #eef1f5;
++  /* Hard containment: the 460x460 stage must never expose scrollbars, even if a
++     child regresses later. The card (360px + 24px padding) and its shadow fit
++     well inside 460px, so this clips nothing in the golden layout. */
++  overflow: hidden;
+ }
+ 
+ .pricing-card {
+@@ -74,14 +78,17 @@ body {
+ }
+ 
+ .pricing-card__cta {
+-  /* Layout contract: the CTA lives in normal flow inside the card. The seeded
++  /* Layout contract: the CTA is a normal in-flow child of the card. The seeded
+      defect pinned it with `position: absolute; left: 9999px; top: 24px`, which
+-     removed it from the card and forced viewport scrollbars. `static`/`auto`
+-     is the golden layout (the golden was captured with exactly these values),
+-     so the CTA stays visible and the 460x460 stage never overflows. */
++     removed it from the card and forced scrollbars. `position: static` is the
++     declaration that restores normal flow; `left`/`top` offsets do not apply to
++     a static box, so they are intentionally absent rather than reset to `auto`.
++     `display: inline-block` and `max-width: 100%` state the intended used
++     values explicitly (both match the UA button defaults) and keep the CTA
++     inside the card's content box at any zoom. */
+   position: static;
+-  left: auto;
+-  top: auto;
++  display: inline-block;
++  max-width: 100%;
+   padding: 10px 16px;
+   border: 0;
+   border-radius: 10px;
+
+
+=== WORKING TREE (staged+unstaged) ===
+diff --git a/src/styles.css b/src/styles.css
+index 9ff1a00..4895597 100644
+--- a/src/styles.css
++++ b/src/styles.css
+@@ -27,10 +27,8 @@ body {
+   display: grid;
+   place-items: center;
+   background: #eef1f5;
+-  /* Hard containment: the 460x460 stage must never expose scrollbars, even if a
+-     child regresses later. The card (360px + 24px padding) and its shadow fit
+-     well inside 460px, so this clips nothing in the golden layout. */
+-  overflow: hidden;
++  /* No clipping here: the 460x460 stage must fit its card by layout, not by
++     hiding overflow. The golden contract checks real scrollWidth/clientWidth. */
+ }
+ 
+ .pricing-card {
+@@ -78,17 +76,9 @@ body {
+ }
+ 
+ .pricing-card__cta {
+-  /* Layout contract: the CTA is a normal in-flow child of the card. The seeded
+-     defect pinned it with `position: absolute; left: 9999px; top: 24px`, which
+-     removed it from the card and forced scrollbars. `position: static` is the
+-     declaration that restores normal flow; `left`/`top` offsets do not apply to
+-     a static box, so they are intentionally absent rather than reset to `auto`.
+-     `display: inline-block` and `max-width: 100%` state the intended used
+-     values explicitly (both match the UA button defaults) and keep the CTA
+-     inside the card's content box at any zoom. */
+-  position: static;
+-  display: inline-block;
+-  max-width: 100%;
++  /* The seeded CTA displacement is removed, not overridden: the button is a
++     normal in-flow child of the card. Do not add positioning or off-canvas
++     offsets here; the golden stage contract depends on normal flow. */
+   padding: 10px 16px;
+   border: 0;
+   border-radius: 10px;

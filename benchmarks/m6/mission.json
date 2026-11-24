@@ -1,0 +1,72 @@
+{
+  "workspaceId": "ws_m6_live",
+  "objective": "M6 live multimodal run: fix the off-screen pricing-card CTA from the attached screenshot. The screenshot is .local/benchmark/m6/broken-pricing-card.png. The visual golden and the functional CTA must pass. Do not weaken the gates.",
+  "taskGates": ["functional_correctness", "regression_checks", "artifact_provenance"],
+  "gateCommands": {
+    "functional_correctness": {
+      "browser": {
+        "url": "http://127.0.0.1:{port}/",
+        "server": {
+          "command": "bun run build && bun run preview -- --host 127.0.0.1 --port {port} --strictPort",
+          "url": "http://127.0.0.1:{port}/",
+          "timeoutMs": 120000
+        },
+        "viewport": { "width": 1280, "height": 720, "deviceScaleFactor": 1 },
+        "stageSelector": "[data-testid=stage]",
+        "checks": [
+          { "type": "selectorInViewport", "selector": "[data-testid=cta]" },
+          { "type": "clickText", "selector": "[data-testid=cta]", "expectSelector": "[data-testid=toast]", "expectText": "Plan selected" }
+        ],
+        "screenshot": { "golden": "tests/golden/pricing-card.png", "maxDiffRatio": 0.002 },
+        "timeoutMs": 180000
+      },
+      "timeoutMs": 180000
+    },
+    "regression_checks": {
+      "browser": {
+        "url": "http://127.0.0.1:{port}/",
+        "server": {
+          "command": "bun run build && bun run preview -- --host 127.0.0.1 --port {port} --strictPort",
+          "url": "http://127.0.0.1:{port}/",
+          "timeoutMs": 120000
+        },
+        "viewport": { "width": 1280, "height": 720, "deviceScaleFactor": 1 },
+        "stageSelector": "[data-testid=stage]",
+        "checks": [
+          { "type": "selectorInViewport", "selector": "[data-testid=cta]" },
+          { "type": "clickText", "selector": "[data-testid=cta]", "expectSelector": "[data-testid=toast]", "expectText": "Plan selected" }
+        ],
+        "screenshot": { "golden": "tests/golden/pricing-card.png", "maxDiffRatio": 0.002 },
+        "timeoutMs": 180000
+      },
+      "timeoutMs": 180000
+    },
+    "artifact_provenance": {
+      "command": "git status --porcelain",
+      "timeoutMs": 30000
+    }
+  },
+  "tickets": [
+    {
+      "title": "Fix the off-screen pricing-card CTA from the screenshot",
+      "objective": "The attached screenshot shows the pricing-card CTA missing: it is positioned far off the card and creates scrollbars. Fix the styling so the CTA is visible inside the card, the 460x460 stage renders without scrollbars, and clicking the CTA shows the 'Plan selected' toast. The visual golden and the functional click must pass. Keep the existing app behavior and do not weaken the checks."
+    }
+  ],
+  "engineMatrix": {
+    "mutation": {
+      "engine": "kilo",
+      "providerID": "cyberluke",
+      "modelID": "deepseek-ai--deepseek-v41-flash-1017"
+    },
+    "review": {
+      "engine": "kilo",
+      "providerID": "cyberluke",
+      "modelID": "deepseek-ai--deepseek-v41-flash-1017"
+    },
+    "adjudicate": {
+      "engine": "kilo",
+      "providerID": "cyberluke",
+      "modelID": "deepseek-ai--deepseek-v41-flash-1017"
+    }
+  }
+}

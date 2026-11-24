@@ -1,0 +1,95 @@
+{
+  "gateKey": "regression_checks",
+  "revisionId": "rev_338165ad478e4a46bc80c5a1c90286dc",
+  "candidateHash": "ddc3550bfd2bc4c7e8f38aec092f1db81f6ed293",
+  "command": "browser-gate:http://127.0.0.1:59813/",
+  "cwd": ".",
+  "status": "PASS",
+  "exitCode": 0,
+  "durationMs": 120472,
+  "browser": {
+    "url": "http://127.0.0.1:59813/",
+    "port": 59813,
+    "sessionId": "341d9861-c848-4f00-beee-26a69ca4e38c",
+    "pageId": 234,
+    "checks": [
+      {
+        "type": "selectorInViewport",
+        "selector": "[data-testid=cta]",
+        "ok": true,
+        "detail": {
+          "ok": true,
+          "rect": {
+            "bottom": 591.7890625,
+            "left": 678,
+            "right": 794.0078125,
+            "top": 555.7890625
+          }
+        }
+      },
+      {
+        "type": "clickText",
+        "selector": "[data-testid=cta]",
+        "expectSelector": "[data-testid=toast]",
+        "expected": "Plan selected",
+        "actual": "Plan selected",
+        "ok": true
+      }
+    ],
+    "visual": {
+      "ok": true,
+      "golden": "${DATA}\\gate-runs\\gate-worktrees\\rev_338165ad478e4a46bc80c5a1c90286dc\\tree\\tests\\golden\\pricing-card.png",
+      "actual": "${DATA}\\gate-runs\\gate-runs\\rev_338165ad478e4a46bc80c5a1c90286dc\\regression_checks-2026-11-24T07-42-03-037Z\\actual.png",
+      "diff": "${DATA}\\gate-runs\\gate-runs\\rev_338165ad478e4a46bc80c5a1c90286dc\\regression_checks-2026-11-24T07-42-03-037Z\\diff.png",
+      "ratio": 0,
+      "threshold": 0.002
+    },
+    "serverLog": "$ vite build\nvite v8.3.8 building client environment for production...\ntransforming...\n✓ 16 modules transformed.\nrendering chunks...\ncomputing gzip size...\ndist/index.html                   0.40 kB │ gzip:  0.28 kB\ndist/assets/index-CSJRUGtx.css    1.17 kB │ gzip:  0.53 kB\ndist/assets/index-BG4MKSvT.js   220.96 kB │ gzip: 69.19 kB\n\n✓ built in 359ms\n$ vite preview --host \"127.0.0.1\" --port \"59813\" --strictPort\n  ➜  Local:   http://127.0.0.1:59813/\n"
+  },
+  "stdout": {
+    "sha256": "5795da81a859e0245305c2b166f10282a39d46305c25bb3aea65680949bfa626",
+    "bytes": 1207
+  },
+  "stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "envFingerprint": "7feb205c4a70fab1ad5f9a330c40a0bfc426f2f9b9c81d2f9cb8090b51cfeed5",
+  "testFileHashes": {
+    "bun.lock": "fcea7fea823a798c413b7c871eb3745e9a1495092f391952bfd404ac770c6199",
+    "package.json": "9e04872cc10d2318228bbe3ab60831be0c06a8a7572a7dbdfac186fa78283bd3",
+    "tests/golden/pricing-card.png": "5fa25647458cf2273d86b3dc00865644c1bee047d87075f4cab078dbf7f48dd0",
+    "tsconfig.json": "504797b8ae1f8940c64684fb556fb1c7091a9b7dade7928fb872c8b8108094c2",
+    "vite.config.ts": "b73d01b2d2c72ae61f353efeaf9e7d9648ef311631b3ea0f8a84c1f71b7f8f42"
+  },
+  "protectedPaths": [
+    "**/*.test.*",
+    "**/*.spec.*",
+    "**/test/**",
+    "**/tests/**",
+    "**/__tests__/**",
+    "**/test.mjs",
+    "**/test.js",
+    "**/test.ts",
+    "**/server.test.*",
+    "**/index.test.*",
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "bun.lock",
+    "bun.lockb",
+    "yarn.lock",
+    "tsconfig.json",
+    "**/vite.config.*",
+    "**/vitest.config.*",
+    "**/jest.config.*",
+    ".github/workflows/**"
+  ],
+  "protectedChanged": [],
+  "protectedAllowed": [],
+  "baselinePresent": true,
+  "missingArtifacts": [],
+  "error": null,
+  "startedAt": "2026-11-24T07:42:03.037Z",
+  "finishedAt": "2026-11-24T07:44:04.796Z"
+}

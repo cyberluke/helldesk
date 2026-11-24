@@ -1,0 +1,18 @@
+{
+  "jobId": "job_6efa75a183a24ac9be5d524f",
+  "attemptId": "att_1795506247605-a",
+  "role": "reviewer-a",
+  "text": "{\"result\":\"FINDINGS\",\"coverage\":{\"changedFiles\":1,\"inspectedFiles\":1,\"uncoveredPaths\":[]},\"findings\":[{\"severity\":\"BLOCKER\",\"confidence\":\"VERIFIED\",\"title\":\"Executed functional_correctness gate FAILs, so the visual-golden and CTA-toast acceptance cannot pass\",\"file\":\"src/styles.css\",\"lineStart\":77,\"lineEnd\":85,\"revision\":\"rev_338165ad478e4a46bc80c5a1c90286dc\",\"evidence\":\"Host-executed gate evidence: functional_correctness: FAIL exit=1 duration=66173ms evidence=ev_dc53180c89d646faacd1b40f154ae3a3 candidate=ddc3550bfd2b. The only reviewed change is the hunk @@ -74,6 +74,14 @@ adding `position: static; left: auto; top: auto` to `.pricing-card__cta`; no gate or test files were modified, so the executed FAIL applies to this candidate state.\",\"counterexample\":\"Run the required functional acceptance on the frozen candidate: the gate exits 1 (ev_dc53180c89d646faacd1b40f154ae3a3), so the 460x460 stage, CTA visibility/golden comparison, and click-to-'Plan selected'-toast behavior are not all reproduced. If the serialized position reset were the complete fix, the executed gate would exit 0.\",\"requirement\":\"M6 ticket: CTA visible inside the card, 460x460 stage renders without scrollbars, clicking the CTA shows the 'Plan selected' toast; the visual golden and functional click must pass, and the gates must not be weakened.\",\"verification\":\"Inspect the failure output of ev_dc53180c89d646faacd1b40f154ae3a3 and re-run functional_correctness against rev_338165ad478e4a46bc80c5a1c90286dc, requiring exit=0 plus a golden-vs-rendered artifact and a post-click toast assertion before any PASS.\",\"reviewerIds\":[\"A\"]}],\"models\":[]}",
+  "tookMs": 65168,
+  "providerID": "cyberluke",
+  "modelID": "deepseek-ai--deepseek-v41-flash-1017",
+  "inferredProviderID": "cyberluke",
+  "inferredModelID": "deepseek-ai--deepseek-v41-flash-1017",
+  "structured": false,
+  "runner": "kilo",
+  "contextTier": "1m",
+  "contextWindow": 1048576,
+  "contextSource": "config-window",
+  "promptCharBudget": 2831155,
+  "outputTokenBudget": 262144
+}

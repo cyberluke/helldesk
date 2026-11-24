@@ -1,0 +1,18 @@
+{
+  "jobId": "job_0036a12b3fc54922a48f1de6",
+  "attemptId": "att_1795508915295-adj",
+  "role": "adjudicator",
+  "text": "{\n  \"result\": \"INCONCLUSIVE\",\n  \"coverage\": {\n    \"changedFiles\": 0,\n    \"inspectedFiles\": 0,\n    \"uncoveredPaths\": []\n  },\n  \"findings\": [],\n  \"models\": []\n}",
+  "tookMs": 47934,
+  "providerID": "cyberluke",
+  "modelID": "deepseek-ai--deepseek-v41-flash-1017",
+  "inferredProviderID": "cyberluke",
+  "inferredModelID": "deepseek-ai--deepseek-v41-flash-1017",
+  "structured": false,
+  "runner": "kilo",
+  "contextTier": "1m",
+  "contextWindow": 1048576,
+  "contextSource": "config-window",
+  "promptCharBudget": 2831155,
+  "outputTokenBudget": 262144
+}

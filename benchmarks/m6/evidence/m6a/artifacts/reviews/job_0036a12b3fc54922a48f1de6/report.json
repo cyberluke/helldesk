@@ -1,0 +1,45 @@
+{
+  "jobId": "job_0036a12b3fc54922a48f1de6",
+  "targetFingerprint": "f0c5396080842b9979d77fa593f60508893be0656e14868bb6495aa6e4da71a1",
+  "result": "INCONCLUSIVE",
+  "coverage": {
+    "changedFiles": 1,
+    "inspectedFiles": 1,
+    "uncoveredPaths": []
+  },
+  "findings": [],
+  "models": [
+    {
+      "role": "reviewer-a",
+      "providerID": "cyberluke",
+      "modelID": "deepseek-ai--deepseek-v41-flash-1017"
+    },
+    {
+      "role": "reviewer-b",
+      "providerID": "cyberluke",
+      "modelID": "deepseek-ai--deepseek-v41-flash-1017"
+    },
+    {
+      "role": "adjudicator",
+      "providerID": "cyberluke",
+      "modelID": "deepseek-ai--deepseek-v41-flash-1017"
+    }
+  ],
+  "attempts": [
+    1
+  ],
+  "createdAt": "2026-11-24T08:28:35.162Z",
+  "completedAt": "2026-11-24T08:38:46.770Z",
+  "policy": {
+    "summary": "Reviewer A + Reviewer B + ExcellenceGovernor (full)",
+    "reviewerA": true,
+    "reviewerB": true,
+    "governor": true,
+    "controls": {}
+  },
+  "cost": {
+    "tokensIn": 0,
+    "tokensOut": 0,
+    "cost": null
+  }
+}

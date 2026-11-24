@@ -1,0 +1,19 @@
+diff --git a/src/styles.css b/src/styles.css
+index cebe01c..4f2d32f 100644
+--- a/src/styles.css
++++ b/src/styles.css
+@@ -74,6 +74,14 @@ body {
+ }
+ 
+ .pricing-card__cta {
++  /* Layout contract: the CTA lives in normal flow inside the card. The seeded
++     defect pinned it with `position: absolute; left: 9999px; top: 24px`, which
++     removed it from the card and forced viewport scrollbars. `static`/`auto`
++     is the golden layout (the golden was captured with exactly these values),
++     so the CTA stays visible and the 460x460 stage never overflows. */
++  position: static;
++  left: auto;
++  top: auto;
+   padding: 10px 16px;
+   border: 0;
+   border-radius: 10px;

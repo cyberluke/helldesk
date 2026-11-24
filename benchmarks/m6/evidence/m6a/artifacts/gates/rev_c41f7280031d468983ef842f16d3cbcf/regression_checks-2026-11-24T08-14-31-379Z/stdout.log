@@ -1,0 +1,35 @@
+{
+  "url": "http://127.0.0.1:62158/",
+  "checks": [
+    {
+      "type": "selectorInViewport",
+      "selector": "[data-testid=cta]",
+      "ok": true,
+      "detail": {
+        "ok": true,
+        "rect": {
+          "bottom": 591.7890625,
+          "left": 678,
+          "right": 794.0078125,
+          "top": 555.7890625
+        }
+      }
+    },
+    {
+      "type": "clickText",
+      "selector": "[data-testid=cta]",
+      "expectSelector": "[data-testid=toast]",
+      "expected": "Plan selected",
+      "actual": "Plan selected",
+      "ok": true
+    }
+  ],
+  "visual": {
+    "ok": true,
+    "golden": "${DATA}\\gate-runs\\gate-worktrees\\rev_c41f7280031d468983ef842f16d3cbcf\\tree\\tests\\golden\\pricing-card.png",
+    "actual": "${DATA}\\gate-runs\\gate-runs\\rev_c41f7280031d468983ef842f16d3cbcf\\regression_checks-2026-11-24T08-14-31-379Z\\actual.png",
+    "diff": "${DATA}\\gate-runs\\gate-runs\\rev_c41f7280031d468983ef842f16d3cbcf\\regression_checks-2026-11-24T08-14-31-379Z\\diff.png",
+    "ratio": 0,
+    "threshold": 0.002
+  }
+}

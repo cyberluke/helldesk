@@ -1,0 +1,18 @@
+{
+  "jobId": "job_0036a12b3fc54922a48f1de6",
+  "attemptId": "att_1795508915295-a",
+  "role": "reviewer-a",
+  "text": "{\"result\":\"PASS\",\"coverage\":{\"changedFiles\":1,\"inspectedFiles\":1,\"uncoveredPaths\":[]},\"findings\":[],\"models\":[]}",
+  "tookMs": 187678,
+  "providerID": "cyberluke",
+  "modelID": "deepseek-ai--deepseek-v41-flash-1017",
+  "inferredProviderID": "cyberluke",
+  "inferredModelID": "deepseek-ai--deepseek-v41-flash-1017",
+  "structured": false,
+  "runner": "kilo",
+  "contextTier": "1m",
+  "contextWindow": 1048576,
+  "contextSource": "config-window",
+  "promptCharBudget": 2831155,
+  "outputTokenBudget": 262144
+}
