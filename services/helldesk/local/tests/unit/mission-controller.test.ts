@@ -513,3 +513,45 @@ describe('M6 — evidence drift: no certification of a tree the gates did not ex
     } finally { h.close(); }
   }, 60_000);
 });
+describe('M6 — a 4a replan never re-mutates the rejected revision', () => {
+  it('rejects an inconclusive-exhausted revision, creates the next, and dispatches no mutation', async () => {
+    const h = makeTestDb();
+    const dir = mkdtempSync(join(tmpdir(), 'gt-replan-'));
+    try {
+      const m = createMission(h.d, { workspace_id: 'ws_replan', objective: 'replan' });
+      const t = addTicket(h.d, m.mission_id, { title: 'T', objective: 'replan' });
+      const rev = createRevision(h.d, {
+        ticket_id: t.ticket_id,
+        hypothesis_key: 'hyp-1',
+        failure_signature: '[]|[]|[]|["inconclusive:x3"]',
+      });
+      updateRevision(h.d, rev.revision_id, { state: 'EVIDENCE_CAPTURED' });
+      updateTicket(h.d, t.ticket_id, { active_revision_id: rev.revision_id });
+      let runnerCalls = 0;
+      const base = stubRunner('CHANGED');
+      const runner: MutationRunner = {
+        ...base,
+        async execute() { runnerCalls += 1; throw new Error('rejected revision must not be re-mutated'); },
+      };
+      const deps: ControllerDeps = {
+        d: h.d,
+        runner,
+        mandatoryGates: [],
+        workspacePathFor: () => dir,
+        review: async () => ({
+          verdict: 'INCONCLUSIVE', mandatoryGates: [], gatePassed: {}, gateEvidenceRefs: {},
+          findings: [], evidenceResolved: false, snapshotId: null, reviewJobId: null,
+        }),
+      };
+      const out = await advanceMission(m.mission_id, deps);
+      expect(out.action).toBe('replanned-inconclusive-exhausted');
+      expect(runnerCalls).toBe(0);
+      const revs = listRevisions(h.d, t.ticket_id);
+      expect(revs[0]!.state).toBe('REJECTED');
+      expect(revs[1]!.state).toBe('PLANNED');
+    } finally {
+      h.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
