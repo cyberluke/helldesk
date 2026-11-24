@@ -526,7 +526,10 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
           updateTicket(d, target.ticket_id, { active_revision_id: next.revision_id });
           persistPlan(d, next.revision_id, { objective: target.objective ?? target.title, hypothesis_key: `hyp-${current.revision_no + 1}`, failure_signature: sig, reason: 'review-inconclusive-exhausted', findings: reviewVerdict.findings, failedGates: [], evidenceIds: [] });
           emitMissionEvent(d, 'mission.replanned', { mission_id: missionId, ticket_id: target.ticket_id, revision_id: next.revision_id, reason: 'review-inconclusive-exhausted' });
-          current = getRevision(d, current.revision_id)!;
+          // MUST return: falling through would dispatch a mutation for the
+          // REJECTED revision while the fresh revision waits (M6 run B defect:
+          // rev1 became MUTATING again and rev2 stayed PLANNED).
+          return { action: 'replanned-inconclusive-exhausted', nextState: 'REPLANNING' };
         } else {
           incrementInconclusive(d, current.revision_id);
           return { action: `review-inconclusive-reexamine-${inconclusiveCount(d, current.revision_id)}`, nextState: 'VERIFYING' };
@@ -557,7 +560,9 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
         updateTicket(d, target.ticket_id, { active_revision_id: next.revision_id });
         persistPlan(d, next.revision_id, { objective: target.objective ?? target.title, hypothesis_key: `hyp-${current.revision_no + 1}`, failure_signature: sig, reason: `review-${reviewVerdict.verdict}`, findings: reviewVerdict.findings, failedGates: failedKeys, evidenceIds: [] });
         emitMissionEvent(d, 'mission.replanned', { mission_id: missionId, ticket_id: target.ticket_id, revision_id: next.revision_id, reason: `review-${reviewVerdict.verdict}` });
-        current = getRevision(d, current.revision_id)!;
+        // MUST return (same reason as the inconclusive branch): a replan is a
+        // terminal action for this tick; the fresh revision gets the next tick.
+        return { action: `replanned-rereview-${reviewVerdict.verdict}`, nextState: 'REPLANNING' };
       }
     }
   }
