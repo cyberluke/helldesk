@@ -543,7 +543,7 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
         setQualityGate(d, current.revision_id, updatedGates);
         const verified = isRevisionVerified10(d, current.revision_id, reviewVerdict.mandatoryGates.length ? reviewVerdict.mandatoryGates : mandatory);
         if (reviewVerdict.verdict === 'PASS' && verified) {
-          updateRevision(d, current.revision_id, { state: 'VERIFIED_10_10', completed_at: new Date().toISOString() });
+          updateRevision(d, current.revision_id, { state: 'VERIFIED_10_10', completed_at: new Date().toISOString(), workspace_fingerprint_after: 'tree:' + (driftAfter.actual ?? gateIdentity.hash ?? '') });
           updateTicket(d, target.ticket_id, { verification_state: 'VERIFIED_10_10', execution_state: 'AWAITING_ACCEPTANCE' });
           clearHumanAcceptance(d, missionId);
           updateMissionState(d, missionId, 'VERIFIED_10_10', { verified_at: new Date().toISOString() });
@@ -947,7 +947,7 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
       const verified = isRevisionVerified10(d, current.revision_id, verdict.mandatoryGates.length ? verdict.mandatoryGates : mandatory);
       const allTicketsVerified = tickets.every((b) => (b.ticket_id === target.ticket_id && verified) || b.verification_state === 'VERIFIED_10_10');
       if (verified && verdict.verdict === 'PASS' && verdict.evidenceResolved) {
-        updateRevision(d, current.revision_id, { state: 'VERIFIED_10_10', completed_at: new Date().toISOString() });
+        updateRevision(d, current.revision_id, { state: 'VERIFIED_10_10', completed_at: new Date().toISOString(), workspace_fingerprint_after: 'tree:' + (driftAfter.actual ?? gateIdentity.hash ?? '') });
         updateTicket(d, target.ticket_id, { verification_state: 'VERIFIED_10_10', execution_state: 'AWAITING_ACCEPTANCE', active_revision_id: current.revision_id });
         emitMissionEvent(d, 'ticket.verified', { mission_id: missionId, ticket_id: target.ticket_id, revision_id: current.revision_id });
         if (allTicketsVerified) {

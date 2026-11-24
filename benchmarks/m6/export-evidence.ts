@@ -582,7 +582,16 @@ class Exporter {
       const headTreeAtVerification = headAtVerification
         ? git(this.args.workspace, ['show', '-s', '--format=%T', headAtVerification.commit])
         : '';
-      const treeAtVerification = headTreeAtVerification;
+      // The engine persists the exact tree its drift guard accepted at
+      // verification (`tree:<hash>`). That is authoritative for a DIRTY
+      // (uncommitted) delta, where the HEAD tree is the baseline, not the
+      // candidate. Fall back to the reflog head tree for older revisions.
+      const recordedTree = typeof rev.workspace_fingerprint_after === 'string'
+        && rev.workspace_fingerprint_after.startsWith('tree:')
+        ? rev.workspace_fingerprint_after.slice('tree:'.length)
+        : '';
+      const treeAtVerification = recordedTree || headTreeAtVerification;
+      const treeSource = recordedTree ? 'revision.workspace_fingerprint_after' : 'git-reflog-head-tree';
       const treeMatchesAtVerification = gateCandidate && treeAtVerification
         ? treeAtVerification === gateCandidate
         : null;
@@ -605,6 +614,7 @@ class Exporter {
         verified_at: verifiedAt,
         head_at_verification: headAtVerification ?? null,
         tree_at_verification: treeAtVerification || null,
+        tree_source: treeSource,
         tree_at_verification_equals_gate_candidate: treeMatchesAtVerification,
         workspace_head_at_export: ws.head,
         workspace_head_tree_at_export: ws.headTree,
