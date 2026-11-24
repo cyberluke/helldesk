@@ -84,4 +84,15 @@ describe('snapshot engine', () => {
     expect(snap.diff).toContain('STAGED_MARKER');
     expect(snap.diff.trim().length).toBeGreaterThan(0);
   }, 20_000);
+
+  it('git-dirty with NO base still puts the dirty patch in the frozen diff', async () => {
+    const g = makeGitFixture({ commits: [{ msg: 'root', files: { 'math.js': 'export function add(a, b) { return a + b; }\n' } }] });
+    writeFileSync(join(g.dir, 'math.js'), 'export function add(a, b) { return a + b; } // NO_BASE_MARKER\n');
+    const store = mkdtempSync(join(tmpdir(), 'gt-nobasestore-'));
+    const snap = await captureGitSnapshot({ workspacePath: g.dir, kind: 'git-dirty', base: null, snapshotStore: store });
+    expect(snap.baseHash).toBeNull();
+    expect(snap.changedFiles).toContain('math.js');
+    expect(snap.diff).toContain('NO_BASE_MARKER');
+    expect(snap.diff.trim().length).toBeGreaterThan(0);
+  }, 20_000);
 });

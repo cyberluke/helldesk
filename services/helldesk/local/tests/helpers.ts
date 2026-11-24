@@ -35,7 +35,8 @@ export function makeGitFixture(opts?: {
     execSync(`git add -A && git commit -qm "${c.msg}"`, { cwd: dir });
   }
   const head = execSync(`git rev-parse HEAD`, { cwd: dir }).toString().trim();
-  const base = execSync(`git rev-parse HEAD~1`, { cwd: dir }).toString().trim();
+  let base = '';
+  try { base = execSync(`git rev-parse HEAD~1`, { cwd: dir }).toString().trim(); } catch { base = ''; } // root commit
   return { dir, head, base };
 }
 

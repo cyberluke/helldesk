@@ -244,7 +244,11 @@ export async function captureGitSnapshot(opts: {
     // part of the review subject.
     const worktreeFiles = new Set<string>([...dirty.changedFiles, ...dirty.untrackedFiles].map((f) => f.replace(/\\/g, '/')));
     if (includeDirty && dirty.patch.trim().length > 0) {
-      if (baseHash) diff += '\n\n=== WORKING TREE (staged+unstaged) ===\n' + dirty.patch;
+      // ALWAYS include the dirty patch. The old `if (baseHash)` guard dropped it
+      // for a git-dirty snapshot with no base — the manifest listed the changed
+      // file and hashed the patch, but the reviewer's diff was empty, so both
+      // reviewers returned INCONCLUSIVE with uncoveredPaths=[src/styles.css].
+      diff += '\n\n=== WORKING TREE (staged+unstaged) ===\n' + dirty.patch;
       dirtyHash = sha256(dirty.patch);
       // The dirty working-tree files are part of this review subject even if
       // nothing was committed between base..head. Without this, a git-dirty
