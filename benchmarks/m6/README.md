@@ -175,8 +175,11 @@ bun run benchmarks/m6/verify-bundle.ts benchmarks/m6/evidence/m6c
 ## Honest gaps
 
 * The demo media is a real-browser page-capture, not native 4K/HDR/60 fps.
-* `artifact_provenance` is a host command gate; it does not by itself prove the
-  candidate tree is a git worktree (the browser gates run in a materialized copy).
+* `artifact_provenance` is a host shell gate (`git status --porcelain`) executed
+  inside the materialized candidate tree. That tree is an extracted archive with
+  no `.git`, so a git command there can resolve to an enclosing repository instead
+  of the candidate; the gate result is therefore weak provenance. The browser gates
+  and the candidate-tree hash are the authoritative evidence.
 * The Kilo mutation runner's exported model can keep working after its prompt
   resolves; the candidate-binding guard now catches the resulting drift, but the
   writer itself is not yet fenced at the process level.

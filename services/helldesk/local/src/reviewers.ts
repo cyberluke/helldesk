@@ -207,6 +207,20 @@ export function finalizeStageText(opts: {
  * Any finding claiming VERIFIED must point at a real snapshot path and valid
  * line range; otherwise its confidence is forced down to HYPOTHESIS.
  */
+/**
+ * Compose the final reviewer user prompt.
+ *
+ * `userPromptOverride` exists so the adjudicator can receive the A/B verdicts,
+ * but it must NEVER replace the frozen evidence packet. Replacing it made the
+ * adjudicator blind to the diff, changed-file list, requirements and attachments
+ * (the "packet lacked the render + test summary" INCONCLUSIVE in M6 runs A/B):
+ * the override is a PREAMBLE, the evidence follows.
+ */
+export function composeReviewUserPrompt(evidencePrompt: string, override?: string): string {
+  if (!override) return evidencePrompt;
+  return `${override}\n\n=== FROZEN SNAPSHOT EVIDENCE ===\n${evidencePrompt}`;
+}
+
 export async function runReviewerStage(opts: {
   d: Db;
   jobId: string;
@@ -232,15 +246,18 @@ export async function runReviewerStage(opts: {
   let diffText = '';
   try { diffText = readFileSync(joinPaths(opts.store, `${opts.snapshotId}.diff`), 'utf-8'); } catch { diffText = ''; }
 
-  const user = opts.userPromptOverride ?? buildReviewUserPrompt({
-    role: opts.role,
-    targetId: opts.targetId,
-    requirements,
-    diff: diffText,
-    changedFiles: ctx.manifest.changedFiles,
-    reviewMode: 'frozen-evidence',
-    promptCharBudget: opts.promptCharBudget,
-  });
+  const user = composeReviewUserPrompt(
+    buildReviewUserPrompt({
+      role: opts.role,
+      targetId: opts.targetId,
+      requirements,
+      diff: diffText,
+      changedFiles: ctx.manifest.changedFiles,
+      reviewMode: 'frozen-evidence',
+      promptCharBudget: opts.promptCharBudget,
+    }),
+    opts.userPromptOverride,
+  );
 
   const prompt: ReviewPrompt = {
     role: opts.role,

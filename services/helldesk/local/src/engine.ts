@@ -1375,7 +1375,7 @@ function buildAdjudicationUser(opts: {
     opts.bFindings,
     '',
     'Re-verify every HIGH/BLOCKER claim against the aligned snapshot evidence. Deduplicate, reject unsupported assertions, reconcile contradictions.',
-    'The ENTIRE evidence is above — there is nothing to fetch or inspect elsewhere; do NOT attempt any tools (none are available).',
+    'The frozen snapshot evidence (requirements, changed-file list, diff, attached images) follows below this preamble. Base every claim on it; do NOT attempt any tools (none are available).',
     'Output ONLY the single strict adjudicator JSON object (result, coverage, findings, models). No prose before or after the JSON.',
   ].join('\n');
 }

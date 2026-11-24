@@ -7,6 +7,7 @@ import {
   parseReviewVerdict,
   reviewResponseFormatChain,
 } from '../../src/review-contract';
+import { composeReviewUserPrompt } from '../../src/reviewers';
 
 /**
  * The verdict contract is the ONE definition shared by:
@@ -75,5 +76,25 @@ describe('review-verdict contract (single source of truth)', () => {
     expect(isUnsupportedStructuredOutput(400, 'context length exceeded')).toBe(false);
     expect(isUnsupportedStructuredOutput(500, 'response_format unsupported')).toBe(false);
     expect(isUnsupportedStructuredOutput(undefined, 'response_format unsupported')).toBe(false);
+  });
+});
+
+describe('review prompt composition (adjudicator evidence packet)', () => {
+  it('appends the frozen evidence packet after an override instead of replacing it', () => {
+    // Regression for the M6 A/B finding: userPromptOverride used to REPLACE the
+    // evidence prompt, so the adjudicator saw only A/B verdicts and reported
+    // "no changed-file list, diff, file reads, or test evidence".
+    const evidence = 'REQUIREMENTS:\n...\nDIFF:\n--- a/src/styles.css\n+++ b/src/styles.css\n';
+    const composed = composeReviewUserPrompt(evidence, '# Adjudication\nReviewer A result: PASS');
+    expect(composed).toContain('# Adjudication');
+    expect(composed).toContain('=== FROZEN SNAPSHOT EVIDENCE ===');
+    expect(composed).toContain('DIFF:');
+    expect(composed).toContain('+++ b/src/styles.css');
+    expect(composed.endsWith(evidence)).toBe(true);
+  });
+
+  it('returns the evidence prompt unchanged when there is no override', () => {
+    const evidence = 'DIFF: only evidence';
+    expect(composeReviewUserPrompt(evidence)).toBe(evidence);
   });
 });
