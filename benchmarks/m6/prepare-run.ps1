@@ -118,12 +118,10 @@ $config = [ordered]@{
   policy = [ordered]@{
     runner = 'kilo'; productionCancelFake = $true; sizingTimeoutMs = 20000
     pricing = [ordered]@{ default = [ordered]@{ inputPer1M = 0; outputPer1M = 0 } }
-    kiloServerBin = 'C:\Users\lukes.COREI9\.vscode-insiders\extensions\kilocode.kilo-code-7.8.32-win32-x64\bin\kilo.exe'
     strictCoverage = $true
   }
   autonomy = [ordered]@{
     enabled = $true; mutationRunner = 'kilo'
-    kiloBin = 'C:\Users\lukes.COREI9\.vscode-insiders\extensions\kilocode.kilo-code-7.8.32-win32-x64\bin\kilo.exe'
     providerID = 'cyberluke'; modelID = 'deepseek-ai--deepseek-v41-flash-1017'
     baseURL = ''; apiKey = ''
     taskGates = @('spec_parity', 'no_scope_loss', 'functional_correctness', 'regression_safety', 'delivery_documentation')
