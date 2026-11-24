@@ -12,7 +12,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BrowserosClient, resolveBrowserosMcpUrl } from '../../../../services/helldesk/local/src/browseros-client';
-import { freePort, startAppServer, waitForHttp } from '../../../../services/helldesk/local/src/browser-gate';
+import { cropStageScreenshot, freePort, startAppServer, waitForHttp } from '../../../../services/helldesk/local/src/browser-gate';
 
 const repoRoot = process.cwd();
 const fixture = join(repoRoot, 'benchmarks', 'v0', 'visual-fixture');
@@ -55,6 +55,7 @@ try {
   await client.focusForCapture(pageId);
   const stageReady = await client.waitForSelector(pageId, '[data-testid=stage]', 15_000);
   if (!stageReady) throw new Error('stage did not appear within 15s');
+
   // Use the same capture path as the gate: set the 1280x720 viewport and
   // CDP-capture the stage before any interaction.
   const value = await client.captureAndCheck({
@@ -66,7 +67,7 @@ try {
   });
   if (!value?.screenshot || !value.stageRect) throw new Error('BrowserOS returned no screenshot/stageRect');
   mkdirSync(join(fixture, 'tests', 'golden'), { recursive: true });
-  const bytes = Buffer.from(await client.screenshotCdpClip(pageId, value.stageRect, 1), 'base64');
+  const bytes = cropStageScreenshot(value.screenshot, value.stageRect, value.viewport);
   writeFileSync(goldenPath, bytes);
   console.log(`GOLDEN=${goldenPath}`);
   console.log(`BYTES=${bytes.length}`);

@@ -399,6 +399,7 @@ export class BrowserosClient {
     await this.run(
       `const page = browser.page(${pageId});` +
       `await page.cdp('Emulation.setDeviceMetricsOverride', JSON.stringify({ width: ${width}, height: ${height}, deviceScaleFactor: ${dpr}, mobile: false }));` +
+      `try { await page.cdp('Emulation.setVisibleSize', JSON.stringify({ width: ${width}, height: ${height} })); } catch (e) {}` +
       `return { ok: true };`,
     );
   }
@@ -423,13 +424,20 @@ export class BrowserosClient {
     rect: { x: number; y: number; width: number; height: number },
     scale = 1,
   ): Promise<string> {
-    const x = Math.max(0, Math.round(rect.x));
-    const y = Math.max(0, Math.round(rect.y));
+    // CDP clip coordinates are DOCUMENT-relative; getBoundingClientRect is
+    // viewport-relative. A scrolled page would otherwise capture the background
+    // above the stage (observed: a blank 460x460 golden).
+    const scroll = await this.evaluate(
+      pageId,
+      `return { x: window.scrollX || 0, y: window.scrollY || 0 };`,
+    ) as { x?: number; y?: number } | null;
+    const x = Math.max(0, Math.round(rect.x + (scroll?.x ?? 0)));
+    const y = Math.max(0, Math.round(rect.y + (scroll?.y ?? 0)));
     const width = Math.max(1, Math.round(rect.width));
     const height = Math.max(1, Math.round(rect.height));
     const result = await this.run(
       `const page = browser.page(${pageId});` +
-      `const shot = await page.cdp('Page.captureScreenshot', JSON.stringify({ format: 'png', fromSurface: true, captureBeyondViewport: false, clip: { x: ${x}, y: ${y}, width: ${width}, height: ${height}, scale: ${scale} } }));` +
+      `const shot = await page.cdp('Page.captureScreenshot', JSON.stringify({ format: 'png', fromSurface: true, captureBeyondViewport: true, clip: { x: ${x}, y: ${y}, width: ${width}, height: ${height}, scale: ${scale} } }));` +
       `return { data: shot && shot.data ? shot.data : null };`,
     ) as { data?: string | null } | null;
     if (!result?.data) throw new Error('CDP clip screenshot returned no image data');

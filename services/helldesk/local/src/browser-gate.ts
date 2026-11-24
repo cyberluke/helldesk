@@ -351,11 +351,11 @@ export async function runBrowserGate(opts: {
 
     const fullPath = filePaths(opts.evidenceDir, 'full.png');
     writeFileSync(fullPath, Buffer.from(run.screenshot, 'base64'));
-    // Stage image = exact CDP clip at scale 1. Window size/browser zoom cannot
-    // change its geometry; a full-surface capture at 80% zoom must never be
-    // compared as a visual defect.
+    // Stage image = full screenshot cropped by the declared viewport scale.
+    // setViewport pins the visible surface, so this is exact; window zoom cannot
+    // change the geometry. (A direct CDP clip was blank on this BrowserOS build.)
     const actualBytes = spec.screenshot
-      ? Buffer.from(await client.screenshotCdpClip(pageId, run.stageRect, 1), 'base64')
+      ? cropStageScreenshot(run.screenshot, run.stageRect, run.viewport)
       : Buffer.from(run.screenshot, 'base64');
     const actualPath = filePaths(opts.evidenceDir, 'actual.png');
     writeFileSync(actualPath, actualBytes);
