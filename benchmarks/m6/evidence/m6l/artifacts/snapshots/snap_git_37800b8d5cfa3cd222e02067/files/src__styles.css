@@ -1,0 +1,91 @@
+:root {
+  color-scheme: light;
+  font-family: Arial, Helvetica, sans-serif;
+  text-rendering: geometricPrecision;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #eef1f5;
+  color: #101826;
+}
+
+.page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+}
+
+.stage {
+  width: 460px;
+  height: 460px;
+  display: grid;
+  place-items: center;
+  background: #eef1f5;
+}
+
+.pricing-card {
+  position: relative;
+  width: 360px;
+  padding: 24px;
+  border: 1px solid #cbd5e1;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+}
+
+.pricing-card__eyebrow {
+  margin: 0 0 8px;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  color: #475569;
+}
+
+.pricing-card__title {
+  margin: 0 0 8px;
+  font-size: 28px;
+  line-height: 1.15;
+}
+
+.pricing-card__price {
+  margin: 0 0 16px;
+  font-size: 36px;
+  font-weight: 700;
+}
+
+.pricing-card__price span {
+  margin-left: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #475569;
+}
+
+.pricing-card__features {
+  margin: 0 0 20px;
+  padding-left: 18px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #1e293b;
+}
+
+.pricing-card__cta {
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 10px;
+  background: #0f172a;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.pricing-card__toast {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: #166534;
+}

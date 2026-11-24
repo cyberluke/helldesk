@@ -1,0 +1,14 @@
+# Adjudication
+
+Reviewer A result: PASS
+Reviewer B result: PASS
+
+### Reviewer A findings
+[]
+
+### Reviewer B findings
+[]
+
+Re-verify every HIGH/BLOCKER claim against the aligned snapshot evidence. Deduplicate, reject unsupported assertions, reconcile contradictions.
+The frozen snapshot evidence (requirements, changed-file list, diff, attached images) follows below this preamble. Base every claim on it; do NOT attempt any tools (none are available).
+Output ONLY the single strict adjudicator JSON object (result, coverage, findings, models). No prose before or after the JSON.

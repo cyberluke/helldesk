@@ -1,0 +1,15 @@
+{
+  "snapshotId": "snap_git_37800b8d5cfa3cd222e02067",
+  "kind": "git-dirty",
+  "workspacePath": "${WORKSPACE}",
+  "baseHash": "4d7fddde2585b5fa9e72a6a3ea5e9d4f42cc3808",
+  "headHash": "189304b00e7556009e5581353f79ef315ca73787",
+  "dirtyHash": null,
+  "untrackedHash": null,
+  "changedFiles": [
+    "src/styles.css"
+  ],
+  "diffBytes": 284,
+  "requirements": "MISSION: M6 live multimodal run: fix the off-screen pricing-card CTA from the attached screenshot. The screenshot is ${HOME}\\AppData\\Local\\HELLDESK\\bench\\m6l\\broken-pricing-card.png. The visual golden and the functional CTA must pass. Do not weaken the gates.\nticket: Fix the off-screen pricing-card CTA from the screenshot — The attached screenshot shows the pricing-card CTA missing: it is positioned far off the card and creates scrollbars. Fix the styling so the CTA is visible inside the card, the 460x460 stage renders without scrollbars, and clicking the CTA shows the 'Plan selected' toast. The visual golden and the functional click must pass. Keep the existing app behavior and do not weaken the checks.\nREVISION being reviewed: rev_9533cc06b1244e6bb6c84864b41d5f7d\nMANDATORY GATES (10/10 requires ALL PASS each with REPRO of a resolved evidence artifact, never an unsupported claim): functional_correctness, regression_checks, artifact_provenance\nEXECUTED GATES (host-run by the independent gate-runner; a reviewer may FAIL a passing execution on real code grounds, but may NEVER PASS an executed FAIL):\n  - artifact_provenance: PASS exit=0 duration=143ms evidence=ev_cfa327c61b0c4896bef96d1b3850601e candidate=0a70b2779857\n  - functional_correctness: PASS exit=0 duration=2968ms evidence=ev_bfbce7d51a5c4a7a9288fcb9ab969ab9 candidate=0a70b2779857\n  - regression_checks: PASS exit=0 duration=2733ms evidence=ev_80cee72cb1be45b190ad45624308ff45 candidate=0a70b2779857\nPRIOR GATE STATE: none (first review of this revision)\nREPAIR PLAN: (n/a)\nACCEPTANCE CHECKLIST (distilled from the task; verify EACH item against the frozen evidence, cite an artifact per item, and do not PASS a gate while an item is unproven):\n  - [ ] M6 live multimodal run: fix the off-screen pricing-card CTA from the attached screenshot.\n  - [ ] The visual golden and the functional CTA must pass.\nTASK CONSTRAINTS (a violation is at least a HIGH finding; a scope/security violation is a BLOCKER):\n  - Do not weaken the gates.\nEvaluate correctness + adversarial counterexamples of the FULL change this revision introduced (baseline to current working tree).\nAdjudicate the B1 guarantees precisely. Do NOT PASS a gate whose evidence does not reproduce it.",
+  "createdAt": "2026-11-24T16:45:15.317Z"
+}

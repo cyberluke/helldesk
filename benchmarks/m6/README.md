@@ -94,78 +94,61 @@ from the run's own timestamps, not from the machine's current state. Open
 
 ---
 
-## The fix
+## What the benchmark found (and fixed)
 
-Committed as `ef92981d` (`fix(helldesk): bind verification to the exact gated
-candidate tree`).
+Runs A–K are the adversarial record; run L is the clean verification. Every run
+exposed a real defect, and each was fixed before the next run.
 
-* **Candidate identity.** `workspaceTreeIdentity()` recomputes the same temp-index
-  git tree hash the gate runner binds to (read-only, `.gitignore` respected).
-* **Fail-closed drift guard.** Before a review, between convergence attempts, and
-  after the review, the controller compares the workspace tree to the gate
-  candidate. A mismatch discards the verdict and re-enters verification so the 4a
-  sweep re-executes the gates against the current tree. Bounded: after 3 drifts the
-  revision is rejected and replanned — a writer that never quiesces cannot spin.
-* **Snapshot bytes.** `git-dirty` snapshots now materialize the **working-tree**
-  bytes for tracked edits and untracked files, and list untracked files as review
-  subject. A snapshot may no longer pin the HEAD blob while diffing the worktree.
-* **Evidence refresh.** Each review recaptures changed files (idempotent per hash),
-  so the reviewer's evidence manifest matches the snapshot bytes.
-* **Quiescence.** A bounded wait (only when executable gates exist) reduces wasted
-  gate/review cycles without weakening the hard check.
-* **Cross-instance isolation.** `prepare-run.ps1` refuses to prepare a run while
-  another known HELLDESK instance has a non-terminal benchmark mission.
+| run | gates | review | outcome | defect found → fix |
+|---|---|---|---|---|
+| A `m6a` | rev1 FAIL, rev2 PASS | A PASS, B FINDINGS/INCONCLUSIVE | **false VERIFIED_10_10** | verification not bound to the gate candidate + a second control plane mutating the workspace → candidate-binding guard + cross-instance isolation |
+| B `m6b` | all PASS | A/B PASS, adjudicator INCONCLUSIVE | fail-closed, replanned | A/B override **replaced** the adjudicator's evidence prompt → evidence appended |
+| C `m6c` | all PASS (rev2) | both reviewers BLOCKER | rejected | a staged-only edit produced a 0-byte frozen diff → staged+unstaged patch; the 4a replan re-mutated the rejected revision → return after replan |
+| E/F `m6e/f` | visual size mismatch | — | rejected | the golden was captured at the window scale (565x566), not the declared 460x460 stage → regenerated through the production capture path |
+| G/H `m6g/h` | visual size mismatch | — | rejected | full-surface capture inherited the operator window/zoom (368x368) → CDP viewport + visible-size pin; a direct CDP clip was blank on this build and rejected |
+| I/J `m6i/j` | all PASS | A/B INCONCLUSIVE, coverage 0 | rejected | the dirty patch was dropped when `baseHash` is null → always included; the detached worker dropped the evidence for the adjudicator → composed |
+| K `m6k` | all PASS | A/B/adj **PASS**, coverage 1/1 | **still rejected** | the terminal-job fast path returned `gatePassed={}` → reconstructed from persisted executions |
+| L `m6l` | all PASS | A/B/adj PASS | **VERIFIED_10_10** | — |
 
-Regression tests: `workspaceTreeIdentity` (clean/dirty/ignored), git-dirty snapshot
-bytes, and a controller test where a writer edits during review → the PASS is
-discarded, then a clean second tick certifies the re-gated tree.
+Also fixed along the way: `controlplane.pid` is written only after a successful
+bind; the verified tree is persisted as `tree:<hash>`; the browser gate no longer
+calls `Page.bringToFront`; the daemon installs hidden child spawns; the mutation
+prompt forbids self-verification; the materialized candidate is a clean git
+snapshot so provenance gates inspect the candidate (not an enclosing repo).
 
 ---
 
-## Run B (`m6b`) — post-fix detection run
+## Verified showcase — run L (`m6l`)
 
-Prepared with `prepare-run.ps1 -RunId m6b` (fresh fixture copy, own git history,
-own data dir, control plane `:4793`). Mission `mis_d8774ff2f7154c42965e073eebf8adb8`.
+* Mission `mis_8432c46cb14641cb8cb93145b0dcef65`, workspace `ws_5eb04f8d18b6cdf4`,
+  baseline `4d7fddd`.
+* **Blind workspace outside the repository**
+  (`%LOCALAPPDATA%\HELLDESK\bench\m6l`): the mutator could not read the engine,
+  prior evidence, or a previous diff.
+* Real mutation (deepseek-v4.1-flash via the Kilo runner) committed the minimal
+  fix `189304b`.
+* All host gates **PASS on one candidate** `0a70b277…`:
+  `artifact_provenance` 143 ms, `functional_correctness` 2.97 s,
+  `regression_checks` 2.73 s.
+* Reviewer A **PASS**, Reviewer B **PASS**, adjudicator **PASS** — coverage 1/1,
+  no findings.
+* Revision `VERIFIED_10_10` with
+  `workspace_fingerprint_after = tree:0a70b277…` — **identical to the gate
+  candidate**.
+* Mission `VERIFIED_10_10`, awaiting human acceptance.
 
-What it proved, and what it found:
+Bundle: `evidence/m6l/` — 29 artifacts, integrity **PASS**, certification
+**VALID**:
 
-* The real mutation agent produced the correct minimal fix
-  (`position: static` replacing the off-screen absolute placement), commit
-  `7731c70`.
-* All three host gates **PASS on one candidate** `e1647c8a…`:
-  `artifact_provenance` 56 ms, `functional_correctness` 61 s,
-  `regression_checks` 124 s.
-* Reviewer A PASS, Reviewer B PASS.
-* The **adjudicator returned INCONCLUSIVE** with a precise reason:
-  *"entire change scope (no changed-file list, diff, file reads, or test evidence
-  included in snapshot)"*. Root cause: `userPromptOverride` **replaced** the
-  standard review prompt, so the adjudicator saw only the A/B verdicts and a
-  changed-file count. The engine failed closed (no certification) and replanned.
-* A second flow defect surfaced in the replan: the 4a path fell through and
-  re-mutated the *rejected* revision while the fresh revision waited.
+```
+bun run benchmarks/m6/verify-bundle.ts benchmarks/m6/evidence/m6l
+# integrity:     PASS (0 failures)
+# certification: VALID
+# exit 0
+```
 
-Both are fixed:
-
-* `composeReviewUserPrompt()` now appends the frozen evidence packet after the
-  adjudication preamble. Test: `review-contract.test.ts`.
-* The 4a replan branches return for the tick instead of falling through to
-  mutation dispatch.
-
-Bundle: `evidence/m6b/` — integrity PASS, `certification: NOT_CLAIMED` (mission
-cancelled by the operator after the finding; exit 0). 29 artifacts.
-
----
-
-## Run C (`m6c`) — clean post-fix run
-
-* Mission: `mis_f32d708eaaa748c69221eedc599fde24`
-* Workspace: `ws_b0d51dea5c5c6172`, baseline `a222420`
-* Control plane `:4795`, dashboard `:8792`
-* Result: recorded in `evidence/m6c/` when the run reaches a terminal state.
-
-A run C certification is only exported as `VALID` when
-`tree_at_verification === gate_candidate` for the verified revision; otherwise the
-bundle is exported as a finding (exit 1), never as a success.
+The verifier recomputes every byte hash and proves the recorded verification tree
+equals the gate candidate. It never takes the engine's word for a PASS.
 
 ---
 
@@ -178,43 +161,45 @@ bundle is exported as a finding (exit 1), never as a success.
 | `capture-broken.ts` | Captures the seeded broken screenshot through BrowserOS (text/metadata driven). |
 | `export-evidence.ts` | Exports a run DB + artifacts into a sanitized content-addressed bundle. |
 | `verify-bundle.ts` | Audits a bundle offline: artifact hashes + certification claim. |
-| `evidence/m6a/` | Run A finding bundle (integrity PASS, certification INVALID). |
-| `evidence/m6b/` | Run B bundle (post-fix), when complete. |
+| `evidence/m6a/` | Run A finding bundle (integrity PASS, certification **INVALID**). |
+| `evidence/m6b/` | Run B finding bundle (adjudicator packet; NOT_CLAIMED). |
+| `evidence/m6c/` | Run C finding bundle (empty staged diff; NOT_CLAIMED). |
+| `evidence/m6e/` | Run E finding bundle (golden scale; NOT_CLAIMED). |
+| `evidence/m6l/` | **Verified showcase** (integrity PASS, certification **VALID**). |
 
 ## Reproduce
 
 ```powershell
-# 1. Prepare an isolated run (fails if another instance owns a benchmark mission)
-pwsh -File benchmarks/m6/prepare-run.ps1 -RunId m6c -Port 4795
+$run = "$env:LOCALAPPDATA\HELLDESK\bench\m6n"
 
-# 2. Start the control plane + dashboard with the PRODUCT automation.
-#    Both write pidfiles; stop signals only the recorded PID after verifying its
-#    command line still matches. Never kill by image name (kilo.exe belongs to the
-#    VS Code extension too).
-pwsh -File services/helldesk/local/scripts/start.ps1 `
-  -Config .local/benchmark/m6c/live.config.json
+# 1. Prepare a BLIND run outside the repository (fails while another instance
+#    owns a benchmark mission).
+pwsh -File benchmarks/m6/prepare-run.ps1 -RunId m6n -Port 4817 -Root $run
+
+# 2. Start the control plane + dashboard with the PRODUCT automation. Both write
+#    pidfiles; stop signals only the recorded PID after verifying its command
+#    line still matches. Never kill by image name (kilo.exe belongs to the VS Code
+#    extension too).
+pwsh -File services/helldesk/local/scripts/start.ps1 -Config "$run\live.config.json"
 pwsh -File services/helldesk/local-live/scripts/launch-dashboard-hidden.ps1 `
   -Root services/helldesk/local-live -Port 8792 `
-  -ControlConfig .local/benchmark/m6c/live.config.json `
-  -DataRoot .local/benchmark/m6c/local-live `
-  -PidFile .local/benchmark/m6c/dashboard.pid
+  -ControlConfig "$run\live.config.json" `
+  -DataRoot "$run\local-live" `
+  -PidFile "$run\dashboard.pid"
 
-# 3. Register the workspace and create the mission
-#    POST http://127.0.0.1:8792/api/v1/workspaces/register  { "path": "<workspace>" }
-#    POST http://127.0.0.1:8792/api/v1/missions             (body from .local/benchmark/m6c/mission.request.json)
+# 3. Register + create the mission (control plane :4817 or dashboard :8792)
+#    POST /v1/workspaces/register  { "path": "$run\live-workspace" }
+#    POST /v1/missions             (body: $run\mission.request.json)
 
 # 4. Export + audit
-bun run benchmarks/m6/export-evidence.ts --db .local/benchmark/m6c/live-data/helldesk.db `
-  --run-id m6c --workspace .local/benchmark/m6c/live-workspace --out benchmarks/m6/evidence/m6c
-bun run benchmarks/m6/verify-bundle.ts benchmarks/m6/evidence/m6c
+bun run benchmarks/m6/export-evidence.ts --db "$run\live-data\helldesk.db" `
+  --run-id m6n --workspace "$run\live-workspace" --out benchmarks/m6/evidence/m6n
+bun run benchmarks/m6/verify-bundle.ts benchmarks/m6/evidence/m6n
 
 # 5. Stop exactly this run (pidfile + command-line identity; dry-run first if unsure)
-pwsh -File services/helldesk/local/scripts/stop-daemon.ps1 `
-  -Config .local/benchmark/m6c/live.config.json -DryRun
-pwsh -File services/helldesk/local/scripts/stop-daemon.ps1 `
-  -Config .local/benchmark/m6c/live.config.json
-pwsh -File services/helldesk/local-live/scripts/stop-dashboard.ps1 `
-  -PidFile .local/benchmark/m6c/dashboard.pid
+pwsh -File services/helldesk/local/scripts/stop-daemon.ps1 -Config "$run\live.config.json" -DryRun
+pwsh -File services/helldesk/local/scripts/stop-daemon.ps1 -Config "$run\live.config.json"
+pwsh -File services/helldesk/local-live/scripts/stop-dashboard.ps1 -PidFile "$run\dashboard.pid"
 ```
 
 Process-control contract (enforced by the scripts): a process is only signalled
@@ -225,17 +210,24 @@ kill anywhere in the lifecycle.
 
 ## Honest gaps
 
-* The demo media is a real-browser page-capture, not native 4K/HDR/60 fps.
-* `artifact_provenance` is a host shell gate (`git status --porcelain`) executed
-  inside the materialized candidate tree. That tree is an extracted archive with
-  no `.git`, so a git command there can resolve to an enclosing repository instead
-  of the candidate; the gate result is therefore weak provenance. The browser gates
-  and the candidate-tree hash are the authoritative evidence.
+* The demo media is the v0 real-browser page-capture GIF, not native 4K/HDR/60 fps
+  and not a recording of the M6 run.
+* `artifact_provenance` (`git status --porcelain`) runs on a **clean local git
+  snapshot** of the candidate (the materializer creates it), so it proves the
+  candidate is a committed tree — not that the operator's repository is clean. The
+  protected-file hashes and the candidate-tree hash are the stronger evidence.
+* The mutator is not a sandbox. The blind run lives outside the repository so it
+  cannot read the engine, prior evidence, or a previous diff, but it runs with the
+  operator's tools and can read its own run root (including the screenshot, which
+  is intentional). A fully hostile mutator is out of scope for v0.
 * The Kilo mutation runner's exported model can keep working after its prompt
-  resolves; the candidate-binding guard catches the resulting drift, but the
-  writer itself is not yet fenced at the process level. (Its `kilo serve` child is
-  closed by the runner; the observed long tail was the model's own turn.)
-* Run A/B's `INCONCLUSIVE` reviews exposed an adjudicator packet gap (the A/B
-  override replaced the frozen evidence prompt). Fixed in `6590ce81`: the override
-  is a preamble and the diff/files/requirements follow it. Run C exercises the
-  fixed packet.
+  resolves; the candidate-binding guard catches the resulting drift, but the writer
+  is not yet fenced at the process level. (Its `kilo serve` child is closed by the
+  runner; the observed long tail was the model's own turn.)
+* The terminal-review gate reconstruction is proven end-to-end by run L (and runs
+  I/J/K exercise its failure modes) but does not yet have a dedicated unit test;
+  the surrounding gate/evidence logic does.
+* Run A's contaminating production mission (`mis_876894…`) was cancelled and the
+  benchmark workspace was left registered in the production instance. The
+  cross-instance guard now refuses to prepare a run while any known instance owns a
+  benchmark mission, but it does not unregister stale rows.

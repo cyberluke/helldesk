@@ -1,0 +1,14 @@
+diff --git a/src/styles.css b/src/styles.css
+index f1ed80e..cebe01c 100644
+--- a/src/styles.css
++++ b/src/styles.css
+@@ -74,9 +74,6 @@ body {
+ }
+ 
+ .pricing-card__cta {
+-  position: absolute;
+-  left: 9999px;
+-  top: 24px;
+   padding: 10px 16px;
+   border: 0;
+   border-radius: 10px;

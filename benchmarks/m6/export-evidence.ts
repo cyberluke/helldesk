@@ -139,21 +139,20 @@ class Exporter {
       [this.repoRoot, '${REPO}'],
     ];
     if (this.homeDir) maps.push([this.homeDir, '${HOME}']);
+    // Case-insensitive: JSON/manifest sources may lowercase the drive or vary
+    // the user casing (`c:\\Users\\lukes.COREI9\\...`). Handle raw and
+    // JSON-escaped (double-backslash) forms with a regex, not case variants.
+    const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     for (const [abs, token] of maps) {
-      const escaped = abs.replace(/\\/g, '\\\\'); // JSON-encoded Windows path
-      const escapedSlash = slash(abs).replace(/\//g, '\\/');
-      for (const variant of new Set([
-        abs,
-        slash(abs),
-        escaped,
-        escapedSlash,
-        abs.toLowerCase(),
-        slash(abs).toLowerCase(),
-        escaped.toLowerCase(),
-      ])) {
-        out = out.split(variant).join(token);
+      for (const variant of new Set([abs, slash(abs), abs.replace(/\\/g, '\\\\')])) {
+        out = out.replace(new RegExp(escapeRegExp(variant), 'gi'), token);
       }
     }
+    // Generic Windows home scrub: reviewers quote attachment paths using the
+    // 8.3 short username (`C:\Users\LUKES~1.COR\...`) which the long USERPROFILE
+    // map cannot match. Replace any drive:\Users\<user> prefix, raw or
+    // JSON-escaped, with ${HOME}.
+    out = out.replace(/[A-Za-z]:\\+Users\\+[^\\/"\s]+/gi, '${HOME}');
     return out;
   }
 

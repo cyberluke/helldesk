@@ -1,7 +1,7 @@
 {
   "schema": "helldesk.m6.evidence.v1",
   "runId": "m6c",
-  "generatedAt": "2026-11-24T14:41:11.303Z",
+  "generatedAt": "2026-11-24T16:56:24.035Z",
   "generator": "benchmarks/m6/export-evidence.ts",
   "engine": {
     "repoHead": "1b30fe90e7920020e84fae01821af2bbc6124710",
@@ -1488,8 +1488,8 @@
       "kind": "review-prompt",
       "source": "${DATA}\\snapshots\\snap_git_69305037d1dde3c5cdbcf335\\prompts\\att_1795529588672-adj.user.txt",
       "bundlePath": "artifacts/snapshots/snap_git_69305037d1dde3c5cdbcf335/prompts/att_1795529588672-adj.user.txt",
-      "sha256": "b43d21ccab50fa014867be927a137c66cc5eb5bd91111d8733aeaf9d5cc6c77c",
-      "bytes": 8810,
+      "sha256": "156e1f422382e6a6ddb67b97df02c507f25b027abed3c464c6e57162324ad731",
+      "bytes": 8795,
       "sourceSha256": "b43d21ccab50fa014867be927a137c66cc5eb5bd91111d8733aeaf9d5cc6c77c"
     },
     {
@@ -1524,8 +1524,8 @@
       "kind": "review-result",
       "source": "${DATA}\\snapshots\\snap_git_69305037d1dde3c5cdbcf335\\results\\att_1795529588672-b.json",
       "bundlePath": "artifacts/snapshots/snap_git_69305037d1dde3c5cdbcf335/results/att_1795529588672-b.json",
-      "sha256": "4098657ddbf357e8414f6895445ad3122f68ad76241877796b391c62b5b284c1",
-      "bytes": 5620,
+      "sha256": "339e1adf57d7aa1779687b13916a8b5dad569a0cd4bb7518e9d0696d162aafa4",
+      "bytes": 5601,
       "sourceSha256": "4098657ddbf357e8414f6895445ad3122f68ad76241877796b391c62b5b284c1"
     },
     {

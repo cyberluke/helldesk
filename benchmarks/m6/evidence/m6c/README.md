@@ -1,6 +1,6 @@
 # HELLDESK M6 evidence — `m6c`
 
-Generated 2026-11-24T14:41:11.303Z by `benchmarks/m6/export-evidence.ts` from `bundle.json`-recorded state.
+Generated 2026-11-24T16:56:24.035Z by `benchmarks/m6/export-evidence.ts` from `bundle.json`-recorded state.
 
 ## Mission
 
