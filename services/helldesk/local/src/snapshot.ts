@@ -110,7 +110,13 @@ export async function captureDirty(workspacePath: string): Promise<{ patch: stri
       ...(await runGit(workspacePath, ['diff', '--name-only', '--no-color'])).split('\n'),
       ...(await runGit(workspacePath, ['diff', '--cached', '--name-only', '--no-color'])).split('\n'),
     ].filter(Boolean).filter((f, i, a) => a.indexOf(f) === i);
-    patch = await runGit(workspacePath, ['diff', '--no-color']);
+    // BOTH halves of the dirty state. A mutation that stages its edit (`git add`)
+    // has an empty `git diff`; capturing only the unstaged patch produced a
+    // 0-byte frozen diff for a real CSS change (M6 run C revision 2 BLOCKER:
+    // "changed file has an empty frozen diff").
+    const unstaged = await runGit(workspacePath, ['diff', '--no-color']);
+    const staged = await runGit(workspacePath, ['diff', '--cached', '--no-color']);
+    patch = [staged, unstaged].filter((p) => p.trim().length > 0).join('\n');
   } catch { /* no staged/unstaged diff */ }
   let untracked = '';
   const untrackedFiles: string[] = [];

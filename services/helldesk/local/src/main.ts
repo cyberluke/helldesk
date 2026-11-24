@@ -13,6 +13,7 @@ import {
   getHost, disconnectHost, ingestSessionEvent, getSession,
 } from './host-registry';
 import { acceptWorkerResult } from './worker-supervisor';
+import { ensureHiddenChildSpawns } from './windows-spawn';
 import { TaskReconciler } from './task-reconciler';
 import { advanceMission } from './mission-controller';
 import { makeControllerDeps, resolveEffectiveModelRoute } from './engine-review-hook';
@@ -251,6 +252,9 @@ export async function serve(opts?: {
   config?: Config;
   runnerOverride?: ReturnType<typeof makeRunner>;
 }): Promise<DaemonRuntime> {
+  // Windows console hygiene: every child the daemon spawns (kilo serve, gate
+  // command shells, preview servers) must stay windowless. Installed once.
+  ensureHiddenChildSpawns();
   const rt = await startDaemon(opts);
   // SINGLE mutable config reference — the same live Config object Engine reads,
   // owned by rt.configStore. Runtime PATCH /v1/config mutates this same object.

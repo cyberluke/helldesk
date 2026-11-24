@@ -304,9 +304,22 @@ export class BrowserosClient {
     await this.callTool('tabs', { action: 'close', page: pageId }).catch(() => undefined);
   }
 
-  /** Activate the tab. Background tabs are throttled; the gate needs a live page. */
-  async bringToFront(pageId: number): Promise<void> {
-    await this.run(`const page = browser.page(${pageId}); await page.cdp('Page.bringToFront', '{}'); return { ok: true };`);
+  /**
+   * Keep a background page active WITHOUT activating its window.
+   *
+   * `Page.bringToFront` steals OS focus and maximizes BrowserOS on the
+   * operator's desktop — unacceptable for an unattended gate. Focus emulation
+   * plus an explicit active lifecycle prevents background-tab throttling, so
+   * timers/rendering and CDP screenshots behave like a focused tab while the
+   * window stays where the operator left it.
+   */
+  async focusForCapture(pageId: number): Promise<void> {
+    await this.run(
+      `const page = browser.page(${pageId});` +
+      `try { await page.cdp('Emulation.setFocusEmulationEnabled', JSON.stringify({ enabled: true })); } catch (e) {}` +
+      `try { await page.cdp('Page.setWebLifecycleState', JSON.stringify({ state: 'active' })); } catch (e) {}` +
+      `return { ok: true };`,
+    );
   }
 
   /** Wait for a selector by polling a tiny evaluate call. The granular `wait`

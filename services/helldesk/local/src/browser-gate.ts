@@ -280,7 +280,6 @@ export async function runBrowserGate(opts: {
   let pageId: number | null = null;
   let client: BrowserosClient | null = null;
   let server: AppServer | null = null;
-  let warmupPageId: number | null = null;
   let serverLog = '';
   const checks: BrowserGateCheckResult[] = [];
   let visual: BrowserGateResult['browser']['visual'] = null;
@@ -331,12 +330,13 @@ export async function runBrowserGate(opts: {
     });
     await client.connect();
     await client.nameSession('helldesk gate');
-    // Warm the app once, then open the gate page at the same URL. The second
-    // load is served from cache/static preview and the viewport change reflows
-    // reliably without a run-time navigation.
-    warmupPageId = await client.newPage(url);
+    // One page only. A warmup tab doubled the visible tabs for no benefit.
     pageId = await client.newPage(url);
-    await client.bringToFront(pageId);
+    // Keep the page active WITHOUT focusing/maximizing BrowserOS on the
+    // operator's desktop. `Page.bringToFront` was stealing focus and popping the
+    // window; focus emulation + an active lifecycle prevents background-tab
+    // throttling instead.
+    await client.focusForCapture(pageId);
     const stageReady = await client.waitForSelector(pageId, spec.stageSelector ?? 'body', 15_000);
     if (!stageReady) throw new Error('stage selector did not appear within 15s');
     const viewport = spec.viewport ?? { width: 1280, height: 720, deviceScaleFactor: 1 };
@@ -423,8 +423,6 @@ export async function runBrowserGate(opts: {
     };
     if (pageId !== null) await client.closePage(pageId);
     pageId = null;
-    if (warmupPageId !== null) await client.closePage(warmupPageId);
-    warmupPageId = null;
     if (server) server.stop();
     return result;
   } catch (err) {
@@ -432,7 +430,6 @@ export async function runBrowserGate(opts: {
     const status: BrowserGateResult['status'] = /timeout|timed out|aborted/i.test(message) ? 'TIMEOUT' : 'ERROR';
     if (server) serverLog = server.logs();
     if (client && pageId !== null) await client.closePage(pageId).catch(() => undefined);
-    if (client && warmupPageId !== null) await client.closePage(warmupPageId).catch(() => undefined);
     if (server) server.stop();
     return fail(status, message);
   } finally {

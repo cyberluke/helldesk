@@ -72,4 +72,16 @@ describe('snapshot engine', () => {
     const untrackedBlob = readFileSync(join(store, snap.snapshotId, 'files', 'src__new.js'), 'utf8');
     expect(untrackedBlob).toContain('UNTRACKED');
   }, 20_000);
+
+  it('captures a STAGED-only change in the frozen diff (rev2 empty-diff BLOCKER)', async () => {
+    const g = makeGitFixture();
+    // Edit + stage, no commit: `git diff` is empty, `git diff --cached` has the change.
+    writeFileSync(join(g.dir, 'math.js'), 'export function add(a, b) { return a + b; } // STAGED_MARKER\n');
+    execSync('git add math.js', { cwd: g.dir });
+    const store = mkdtempSync(join(tmpdir(), 'gt-stagedstore-'));
+    const snap = await captureGitSnapshot({ workspacePath: g.dir, kind: 'git-dirty', snapshotStore: store });
+    expect(snap.changedFiles).toContain('math.js');
+    expect(snap.diff).toContain('STAGED_MARKER');
+    expect(snap.diff.trim().length).toBeGreaterThan(0);
+  }, 20_000);
 });
