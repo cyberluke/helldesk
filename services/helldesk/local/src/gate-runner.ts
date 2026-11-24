@@ -733,7 +733,11 @@ export async function runGateExecutions(opts: GateRunOptions): Promise<GateRunSu
       const spec = commands[gateKey]!;
       if (!opts.force) {
         const previous = latestGateExecution(opts.d, opts.revisionId, gateKey);
-        if (previous && previous.candidate_hash === candidate.candidateHash) {
+        // Reuse a verdict (PASS/FAIL) for the same candidate, but NEVER reuse an
+        // ERROR: an ERROR is an infrastructure/tool failure (e.g. the BrowserOS
+        // MCP wedged), not evidence about the candidate. Retrying it is correct
+        // and is the only way a fixed gate implementation can recover the run.
+        if (previous && previous.candidate_hash === candidate.candidateHash && previous.status !== 'ERROR') {
           executions.push(previous);
           continue;
         }

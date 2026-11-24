@@ -270,9 +270,10 @@ export async function serve(opts?: {
 
   // Unix-style pidfile: records the exact owning daemon PID + bound port so
   // the stop script can signal ONLY this process (no process-name scans).
+  // Written AFTER a successful bind (below) so a failed second instance cannot
+  // overwrite the live instance's pidfile.
   const pidPath = join(rt.dataDir, 'controlplane.pid');
   mkdirSync(rt.dataDir, { recursive: true });
-  writeFileSync(pidPath, `${process.pid}\n${port}\n`, { flag: 'w' });
 
   const apiCtx: ApiContext = {
     d: rt.d,
@@ -494,6 +495,9 @@ export async function serve(opts?: {
     },
   });
 
+  // Bind succeeded: this process owns the port, so it may publish its pidfile.
+  writeFileSync(pidPath, `${process.pid}\n${port}\n`, { flag: 'w' });
+
   const shutdown = () => {
     server.stop(true);
     clearInterval(timer);
@@ -502,7 +506,11 @@ export async function serve(opts?: {
     clearInterval(missionTick);
     reconciler.dispose();
     releaseSingletonLock(lock.lockPath);
-    try { rmSync(pidPath, { force: true }); } catch { /* noop */ }
+    try {
+      // Never delete a NEWER instance's pidfile: remove ours only.
+      const owner = Number((readFileSync(pidPath, 'utf-8').split('\n')[0] ?? '').trim());
+      if (owner === process.pid) rmSync(pidPath, { force: true });
+    } catch { /* noop */ }
     rt.close();
   };
   if (import.meta.main) {

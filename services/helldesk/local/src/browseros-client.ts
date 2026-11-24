@@ -386,6 +386,42 @@ export class BrowserosClient {
 
   /** Granular screenshot tool; returns the PNG base64. The image response can
    *  intermittently lose its JSON-RPC envelope under MCP load; retry it. */
+  /**
+   * Pin the page viewport at the gate's declared size and DPR 1. Without this,
+   * a CDP screenshot inherits the operator's window size/DPR (e.g. 920x920 at
+   * DPR 2) and the stage crop + golden comparison become meaningless. This is
+   * an emulation override, not a window resize: it does not touch the desktop.
+   */
+  async setViewport(pageId: number, viewport: { width: number; height: number; deviceScaleFactor?: number }): Promise<void> {
+    const width = Math.max(1, Math.round(viewport.width));
+    const height = Math.max(1, Math.round(viewport.height));
+    const dpr = viewport.deviceScaleFactor && viewport.deviceScaleFactor > 0 ? viewport.deviceScaleFactor : 1;
+    await this.run(
+      `const page = browser.page(${pageId});` +
+      `await page.cdp('Emulation.setDeviceMetricsOverride', JSON.stringify({ width: ${width}, height: ${height}, deviceScaleFactor: ${dpr}, mobile: false }));` +
+      `return { ok: true };`,
+    );
+  }
+
+  /**
+   * Capture the page through CDP, independent of which tab/window is visible.
+   *
+   * The MCP `screenshot` tool operates on the visible tab and wedges per
+   * session ("returned no envelope"), and the only way to make a tab visible is
+   * to focus/maximize the browser — which we must not do to an operator's
+   * desktop. `Page.captureScreenshot` with `fromSurface` renders the page's own
+   * surface, so a background tab captures correctly with the window untouched.
+   */
+  async screenshotCdp(pageId: number): Promise<string> {
+    const result = await this.run(
+      `const page = browser.page(${pageId});` +
+      `const shot = await page.cdp('Page.captureScreenshot', JSON.stringify({ format: 'png', fromSurface: true, captureBeyondViewport: false }));` +
+      `return { data: shot && shot.data ? shot.data : null };`,
+    ) as { data?: string | null } | null;
+    if (!result?.data) throw new Error('CDP screenshot returned no image data');
+    return result.data;
+  }
+
   async screenshot(pageId: number): Promise<string> {
     let lastError: unknown = null;
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -448,6 +484,8 @@ export class BrowserosClient {
     stageRect: { x: number; y: number; width: number; height: number };
     checks: Array<{ type: string; ok: boolean; [key: string]: unknown }>;
   }> {
+    // Deterministic screenshot geometry: pin the viewport at the gate's spec.
+    await this.setViewport(opts.pageId, opts.viewport);
     const info = await this.evaluate(
       opts.pageId,
       `const node = document.querySelector(${JSON.stringify(opts.stageSelector)});
@@ -457,8 +495,14 @@ export class BrowserosClient {
     ) as { innerWidth?: number; innerHeight?: number; rect?: { x: number; y: number; width: number; height: number } } | null;
     if (!info?.rect || !info.innerWidth || !info.innerHeight) throw new Error('stage rect unavailable');
 
-    // Visual first, before any click changes the UI.
-    const screenshot = await this.screenshot(opts.pageId);
+    // Visual first, before any click changes the UI. Prefer CDP (background-tab
+    // safe); fall back to the MCP tool only if CDP is unavailable.
+    let screenshot: string;
+    try {
+      screenshot = await this.screenshotCdp(opts.pageId);
+    } catch {
+      screenshot = await this.screenshot(opts.pageId);
+    }
 
     const checks: Array<{ type: string; ok: boolean; [key: string]: unknown }> = [];
     for (const raw of opts.checks) {
