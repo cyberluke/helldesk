@@ -1,0 +1,17 @@
+diff --git a/src/styles.css b/src/styles.css
+index f1ed80e..05f9313 100644
+--- a/src/styles.css
++++ b/src/styles.css
+@@ -74,9 +74,9 @@ body {
+ }
+ 
+ .pricing-card__cta {
+-  position: absolute;
+-  left: 9999px;
+-  top: 24px;
++  /* Keep the CTA in the card's normal flow so it is laid out below the
++     feature list instead of being offset far outside the viewport. */
++  position: static;
+   padding: 10px 16px;
+   border: 0;
+   border-radius: 10px;

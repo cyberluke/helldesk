@@ -1,0 +1,18 @@
+{
+  "jobId": "job_b52b3f8fba0741a596eb406e",
+  "attemptId": "att_1795513828032-adj",
+  "role": "adjudicator",
+  "text": "{\n  \"result\": \"INCONCLUSIVE\",\n  \"coverage\": {\n    \"changedFiles\": 0,\n    \"inspectedFiles\": 0,\n    \"uncoveredPaths\": [\n      \"entire change scope (no changed-file list, diff, file reads, or test evidence included in snapshot)\",\n      \"requirement attachment 0-pricing-card.png has no corresponding implementation evidence screenshot(s) to compare at named states\"\n    ]\n  },\n  \"findings\": [],\n  \"models\": []\n}",
+  "tookMs": 18116,
+  "providerID": "cyberluke",
+  "modelID": "deepseek-ai--deepseek-v41-flash-1017",
+  "inferredProviderID": "cyberluke",
+  "inferredModelID": "deepseek-ai--deepseek-v41-flash-1017",
+  "structured": false,
+  "runner": "kilo",
+  "contextTier": "1m",
+  "contextWindow": 1048576,
+  "contextSource": "config-window",
+  "promptCharBudget": 2831155,
+  "outputTokenBudget": 262144
+}
