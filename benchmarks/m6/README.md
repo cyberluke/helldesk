@@ -137,6 +137,14 @@ snapshot so provenance gates inspect the candidate (not an enclosing repo).
   candidate**.
 * Mission `VERIFIED_10_10`, awaiting human acceptance.
 
+| Before — seeded defect | After — run L verified gate |
+|---|---|
+| ![seeded pricing-card defect](media/broken-stage.png) | ![verified pricing-card](media/verified-stage.png) |
+
+Both are 460×460 at the gate's 1280×720 / DPR-1 geometry. The left capture is missing
+the CTA (positioned off-card); the right image is the exact `functional_correctness`
+evidence from run L (diff ratio **0**, CTA in viewport, click → `Plan selected`).
+
 Bundle: `evidence/m6l/` — 29 artifacts, integrity **PASS**, certification
 **VALID**:
 

@@ -21,6 +21,7 @@ $ErrorActionPreference = "Continue"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = Split-Path -Parent $here
 if (-not $Config) { $Config = Join-Path $root "config.json" }
+elseif (-not [System.IO.Path]::IsPathRooted($Config)) { $Config = (Resolve-Path -LiteralPath $Config).Path }
 if (-not (Test-Path -LiteralPath $Config)) {
     Write-Host "[stop] config not found: $Config" -ForegroundColor Red
     exit 2
