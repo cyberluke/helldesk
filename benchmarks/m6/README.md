@@ -122,16 +122,48 @@ discarded, then a clean second tick certifies the re-gated tree.
 
 ---
 
-## Run B (`m6b`) — post-fix run
+## Run B (`m6b`) — post-fix detection run
 
 Prepared with `prepare-run.ps1 -RunId m6b` (fresh fixture copy, own git history,
-own data dir, control plane `:4793`, dashboard `:8792`).
+own data dir, control plane `:4793`). Mission `mis_d8774ff2f7154c42965e073eebf8adb8`.
 
-* Mission: `mis_d8774ff2f7154c42965e073eebf8adb8`
-* Workspace: `ws_af6a82463050359d`, baseline commit `ffee957`
-* Result: recorded in `evidence/m6b/` once the run reaches a terminal state.
+What it proved, and what it found:
 
-A run B certification is only exported as `VALID` when
+* The real mutation agent produced the correct minimal fix
+  (`position: static` replacing the off-screen absolute placement), commit
+  `7731c70`.
+* All three host gates **PASS on one candidate** `e1647c8a…`:
+  `artifact_provenance` 56 ms, `functional_correctness` 61 s,
+  `regression_checks` 124 s.
+* Reviewer A PASS, Reviewer B PASS.
+* The **adjudicator returned INCONCLUSIVE** with a precise reason:
+  *"entire change scope (no changed-file list, diff, file reads, or test evidence
+  included in snapshot)"*. Root cause: `userPromptOverride` **replaced** the
+  standard review prompt, so the adjudicator saw only the A/B verdicts and a
+  changed-file count. The engine failed closed (no certification) and replanned.
+* A second flow defect surfaced in the replan: the 4a path fell through and
+  re-mutated the *rejected* revision while the fresh revision waited.
+
+Both are fixed:
+
+* `composeReviewUserPrompt()` now appends the frozen evidence packet after the
+  adjudication preamble. Test: `review-contract.test.ts`.
+* The 4a replan branches return for the tick instead of falling through to
+  mutation dispatch.
+
+Bundle: `evidence/m6b/` — integrity PASS, `certification: NOT_CLAIMED` (mission
+cancelled by the operator after the finding; exit 0). 29 artifacts.
+
+---
+
+## Run C (`m6c`) — clean post-fix run
+
+* Mission: `mis_f32d708eaaa748c69221eedc599fde24`
+* Workspace: `ws_b0d51dea5c5c6172`, baseline `a222420`
+* Control plane `:4795`, dashboard `:8792`
+* Result: recorded in `evidence/m6c/` when the run reaches a terminal state.
+
+A run C certification is only exported as `VALID` when
 `tree_at_verification === gate_candidate` for the verified revision; otherwise the
 bundle is exported as a finding (exit 1), never as a success.
 
