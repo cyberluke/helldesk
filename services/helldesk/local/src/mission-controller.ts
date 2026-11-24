@@ -8,14 +8,16 @@ import {
   bumpReplanStreak, resetReplanStreak,
   type MissionState, type RevisionState, type GateStatus,
   scheduleBlockedRetry, clearHumanAcceptance,
+  getMissionGateCommands, latestGateExecution,
 } from './mission-repository';
+import { runGateExecutions } from './gate-runner';
 import type { MutationRunner, RepairResult } from './mutation-runner';
 import { changedFilesSinceFull, fingerprintWorkspace } from './mutation-runner';
 import { acquireLease, releaseLease, renewLease, reclaimStaleLease } from './reconciler';
 import { terminateWorkersForJob } from './worker-supervisor';
 import { getJob } from './jobs';
 import { existsSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { appendTranscript } from './job-transcript';
@@ -90,6 +92,9 @@ export interface ControllerDeps {
   taskGates?: string[];
   /** absolute path to the writable workspace for this mission. */
   workspacePathFor: (missionId: string) => string;
+  /** Storage root for host-executed gate worktrees + transcripts. Defaults to
+   *  <dirname(db path)>/gate-runs. Must be outside the mission workspace. */
+  gateDataDir?: string;
   review: ReviewHook;
   /** WAR-mode verification policy. When a getter returns 'deferred' (or when this
    *  is absent, treated as 'auto'), the controller SKIPS the per-revision review
@@ -121,6 +126,74 @@ export function cancelReviewForRevision(d: Db, revisionId: string, reason: strin
   terminateWorkersForJob(d, job.jobId, reason);
   d.db.query(`DELETE FROM leases WHERE owner=?`).run(`job:${job.jobId}`);
   emitMissionEvent(d, 'review.cancelled', { revision_id: revisionId, job_id: job.jobId, reason });
+}
+
+type ReviewResult = Awaited<ReturnType<ReviewHook>>;
+
+/**
+ * Run the mission's executable gates BEFORE the review, in an isolated
+ * candidate tree. Execution is a controller responsibility so a custom review
+ * hook cannot silently skip it. Execution failures are persisted as gate rows /
+ * evidence by the runner; a catastrophic runner error is journaled and the
+ * Quality Oracle fails closed (missing execution => no VERIFIED_10_10).
+ */
+async function executeMissionGates(
+  d: Db,
+  deps: ControllerDeps,
+  missionId: string,
+  revisionId: string,
+  workspacePath: string,
+): Promise<void> {
+  const commands = getMissionGateCommands(d, missionId);
+  if (!Object.keys(commands).length) return;
+  const dataDir = deps.gateDataDir ?? join(dirname(d.path), 'gate-runs');
+  try {
+    await runGateExecutions({ d, missionId, revisionId, workspacePath, dataDir, commands });
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    emitMissionEvent(d, 'gate.execution_failed', {
+      mission_id: missionId,
+      revision_id: revisionId,
+      error,
+    });
+  }
+}
+
+/**
+ * Quality-gate rows for one review. Execution gates are authoritative in the
+ * FAIL direction: a failed host execution forces FAIL even if the review hook
+ * returned PASS for that gate. The reviewer can only make a passing execution
+ * stricter (a real BLOCKER/HIGH finding), never rescue a failed one.
+ */
+function buildGateRows(
+  d: Db,
+  revisionId: string,
+  verdict: ReviewResult,
+  gates: string[],
+): Array<{ gate_key: string; status: GateStatus; evidence_refs?: string[] }> {
+  return gates.map((gateKey) => {
+    const exec = latestGateExecution(d, revisionId, gateKey);
+    const execPass = !exec || exec.status === 'PASS';
+    const execRefs = exec ? [exec.evidence_artifact_id] : [];
+    const refs = [...new Set([...execRefs, ...(verdict.gateEvidenceRefs?.[gateKey] ?? [])])]
+      .filter((id) => evidenceRefResolves(d, revisionId, id));
+    const pass = execPass
+      && Boolean(verdict.gatePassed[gateKey])
+      && (verdict.evidenceResolved || Boolean(exec))
+      && refs.length > 0;
+    const status: GateStatus = !execPass
+      ? 'FAIL'
+      : pass
+        ? 'PASS'
+        : (verdict.findings.some((f) => f.toLowerCase().includes(gateKey.toLowerCase())) ? 'FAIL' : 'UNVERIFIED');
+    return {
+      gate_key: gateKey,
+      status,
+      evidence_refs: pass
+        ? refs
+        : (exec && !execPass ? execRefs.filter((id) => evidenceRefResolves(d, revisionId, id)) : []),
+    };
+  });
 }
 
 /** Tick sweep: cancel any non-terminal review attached to a dead revision. */
@@ -388,6 +461,7 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
     }
     const ws = deps.workspacePathFor(missionId);
     if (ws) {
+      await executeMissionGates(d, deps, missionId, current.revision_id, ws);
       const reviewVerdict = await review({ missionId, ticketId: target.ticket_id, revisionId: current.revision_id, workspacePath: ws });
       if (getMission(d, missionId)?.state === 'CANCELLED') return { action: 'operator-cancelled', nextState: 'CANCELLED' };
       if (getTicket(d, target.ticket_id)?.objective !== target.objective) {
@@ -420,11 +494,7 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
         // (evidence-resolved gates + verified / FAIL-to-replan). Re-use the same
         // gate/verify logic by NOT bailing here — but keep it simple: if PASS and
         // verified, crown it; else reject+replan below via the shared verdict block.
-        const updatedGates: Array<{ gate_key: string; status: GateStatus; evidence_refs?: string[] }> = reviewVerdict.mandatoryGates.map((k) => {
-          const resolvedRefs = (reviewVerdict.gateEvidenceRefs?.[k] ?? []).filter((id) => evidenceRefResolves(d, current.revision_id, id));
-          const pass = reviewVerdict.gatePassed[k] && reviewVerdict.evidenceResolved && resolvedRefs.length > 0;
-          return { gate_key: k, status: pass ? 'PASS' : (reviewVerdict.findings.some((f) => f.toLowerCase().includes(k.toLowerCase())) ? 'FAIL' : 'UNVERIFIED'), evidence_refs: pass ? resolvedRefs : [] };
-        });
+        const updatedGates = buildGateRows(d, current.revision_id, reviewVerdict, reviewVerdict.mandatoryGates);
         setQualityGate(d, current.revision_id, updatedGates);
         const verified = isRevisionVerified10(d, current.revision_id, reviewVerdict.mandatoryGates.length ? reviewVerdict.mandatoryGates : mandatory);
         if (reviewVerdict.verdict === 'PASS' && verified) {
@@ -756,6 +826,7 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
       // (INCONCLUSIVE = reviewer could not decide). A valid FINDINGS or PASS is
       // accepted immediately. Bound the re-review budget; never reject a revision
       // merely because the FIRST review was inconclusive.
+      await executeMissionGates(d, deps, missionId, current.revision_id, workspace);
       let verdict = await review({ missionId, ticketId: target.ticket_id, revisionId: current.revision_id, workspacePath: workspace });
       let reviewAttempts = 1;
       while (verdict.verdict === 'INCONCLUSIVE' && reviewAttempts < MAX_CONVERGENT_REVIEW_ATTEMPTS) {
@@ -782,11 +853,7 @@ export async function advanceMission(missionId: string, deps: ControllerDeps): P
       }
       // `evidence_id` in a gate ref MUST resolve to a real content-hashed artifact
       // for THIS revision (never a bare overall PASS).
-      const updatedGates: Array<{ gate_key: string; status: GateStatus; evidence_refs?: string[] }> = verdict.mandatoryGates.map((k) => {
-        const refs = (verdict.gateEvidenceRefs?.[k] ?? []).filter((id) => evidenceIds.includes(id) || evidenceRefResolves(d, current.revision_id, id));
-        const pass = verdict.gatePassed[k] && verdict.evidenceResolved && refs.length > 0;
-        return { gate_key: k, status: pass ? 'PASS' : (verdict.findings.some((f) => f.toLowerCase().includes(k.toLowerCase())) ? 'FAIL' : 'UNVERIFIED'), evidence_refs: pass ? refs : [] };
-      });
+      const updatedGates = buildGateRows(d, current.revision_id, verdict, verdict.mandatoryGates);
       setQualityGate(d, current.revision_id, updatedGates);
       const verified = isRevisionVerified10(d, current.revision_id, verdict.mandatoryGates.length ? verdict.mandatoryGates : mandatory);
       const allTicketsVerified = tickets.every((b) => (b.ticket_id === target.ticket_id && verified) || b.verification_state === 'VERIFIED_10_10');

@@ -72,6 +72,7 @@ The local engine reads configuration from `config.json` and `process.env`. Envir
 - `HELLDESK_HOST` - Loopback host the local-live runtime binds (default `127.0.0.1`). [SERVER]
 - `HELLDESK_PORT` - Port the local-live runtime binds. [SERVER]
 - `HELLDESK_DATA_ROOT` - Data root for the federated runtime (SQLite + local storage). [SERVER]
+- `HELLDESK_CONTROL_CONFIG` - Path to an alternate local control-plane `config.json` for benchmark/demo isolation; defaults to `services/helldesk/local/config.json`. [SERVER]
 - `HELLDESK_WORKSTATION_ID` - Workstation identifier used by the federated runtime. [SERVER]
 - `HELLDESK_EXCELLENCE_GOVERNOR_URL` - Base URL of the Chief Excellence Officer / governor engine (default `http://127.0.0.1:8787/`). [SERVER]
 - `HELLDESK_PTY_IDLE_MS` - Idle timeout for front-desk PTY sessions in milliseconds. [SERVER]

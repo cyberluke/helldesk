@@ -24,6 +24,10 @@ modify the source tree, do not run git mutations, and never write files.
    terminal state the app remains interactive (Replay/Close/click/keyboard),
    focus is usable, and the main thread does not freeze. If the evidence stops
    at the final frame, return INCONCLUSIVE or FINDINGS — never PASS.
+7. **Input attachments:** if the requirements include an attachment marked
+   `requirement`, check that the spec/evidence includes screenshot-comparison
+   proof at each named state; `inspiration` is a reference only and must not be
+   treated as pixel parity. PDF citations must use page references.
 
 ## Output contract
 

@@ -144,6 +144,8 @@ export function spawnReviewWorker(opts: {
   workspace: string;
   /** For the adjudicator: the combined A+B prompt the worker should reason over. */
   userOverride?: string;
+  /** Reference/evidence images (requirement attachments + built screenshots). */
+  files?: string[];
 }): WorkerLaunch {
   const workerId = `wk_${generateId().slice(0, 16)}`;
   const t = now();
@@ -199,6 +201,14 @@ export function spawnReviewWorker(opts: {
     const promptPath = join(promptDir, `${opts.attemptId}.user.txt`);
     writeFileSync(promptPath, opts.userOverride, 'utf-8');
     args.push('--userOverrideFile', promptPath);
+  }
+
+  if (opts.files?.length) {
+    const promptDir = join(opts.store, opts.snapshotId, 'prompts');
+    mkdirSync(promptDir, { recursive: true });
+    const filesPath = join(promptDir, `${opts.attemptId}.files.json`);
+    writeFileSync(filesPath, JSON.stringify(opts.files.slice(0, 4)), 'utf-8');
+    args.push('--filesFile', filesPath);
   }
 
   // For codex review, expose the codex binary to the detached worker via env

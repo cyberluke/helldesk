@@ -1,0 +1,51 @@
+{
+  "daemon": {
+    "bind": "127.0.0.1",
+    "port": 4791,
+    "dataDir": "C:\\src\\kilo-gastown-local\\.local\\benchmark\\v0",
+    "production": true,
+    "detachedWorkers": true,
+    "maxConcurrentJobs": 2,
+    "maxReviewersPerJob": 2,
+    "maxAttempts": 3,
+    "leaseSeconds": 30,
+    "requestTimeoutMs": 120000,
+    "retryBaseMs": 2000,
+    "retryMaxMs": 60000,
+    "breakerThreshold": 3,
+    "breakerCooldownMs": 30000,
+    "maxSnapshotBytes": 67108864,
+    "retentionDays": 30
+  },
+  "autonomy": {
+    "enabled": true,
+    "mutationRunner": "kilo",
+    "kiloBin": "C:\\Users\\lukes.COREI9\\.vscode-insiders\\extensions\\kilocode.kilo-code-7.8.32-win32-x64\\bin\\kilo.exe",
+    "providerID": "cyberluke",
+    "modelID": "deepseek-ai--deepseek-v41-flash-1017",
+    "baseURL": "",
+    "apiKey": "",
+    "taskGates": [
+      "functional_correctness",
+      "regression_checks",
+      "artifact_provenance"
+    ]
+  },
+  "policy": {
+    "runner": "kilo",
+    "productionCancelFake": true,
+    "pricing": {
+      "default": {
+        "inputPer1M": 0,
+        "outputPer1M": 0
+      }
+    },
+    "strictCoverage": true
+  },
+  "context": {
+    "tier": "auto",
+    "charsPerToken": 4,
+    "promptUtilization": 0.9
+  },
+  "workspaces": []
+}

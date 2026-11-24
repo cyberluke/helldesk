@@ -1,18 +1,16 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { createKilo } from '@kilocode/sdk';
-import { ensureHiddenChildSpawns } from './windows-spawn';
+import { basename, extname, join } from 'node:path';
 import { probeProvider } from './provider-preflight';
 
 /**
  * Real headless Kilo inference for detached HELLDESK review workers.
  *
- * Each review worker boots its OWN Kilo runtime via the installed
- * `@kilocode/sdk` (createKilo -> the user's locally-installed `kilo serve`
- * headless server binary). It never touches the originating VS Code instance,
- * never uses the Kilo Gateway, GitHub or containers, and never shares a runtime
- * with other workers. The worker:
+ * Each review worker runs the installed `kilo run` CLI (the same surface as
+ * the Task Studio enhancer) with an explicit read-only agent and model route.
+ * It never uses the Kilo Gateway, GitHub or containers, and never shares a
+ * runtime with other workers. The worker:
  *   1. loads the effective native provider config for the requested route,
  *   2. creates a read-only `helldesk-reviewer` agent (all write/shell/external
  *      tools denied; only the immutable evidence snapshot read tools allowed),
@@ -49,6 +47,11 @@ export interface KiloWorkerConfig {
   modelRef?: string;
   /** Absolute path to the `kilo` server binary (headless Kilo runtime). */
   kiloBin: string;
+  /**
+   * Optional local image/page files (requirement references + evidence
+   * screenshots) attached to the review message. Data-URL parts, bounded.
+   */
+  files?: string[];
   /** Absolute path to the immutable snapshot store (read-only evidence tools). */
   snapshotStore: string;
   /** Role-specific system prompt (reviewer-correctness.md / adversarial / adjudicator). */
@@ -156,7 +159,11 @@ export function buildSdkConfig(cfg: KiloWorkerConfig): Record<string, unknown> {
         Math.max(0, (cfg.contextWindowTokens ?? 131072) - (cfg.maxOutputTokens ?? 32000)),
       output: cfg.maxOutputTokens ?? 32000,
     },
-    modalities: inheritedModel?.modalities ?? { input: ['text'], output: ['text'] },
+    modalities:
+      inheritedModel?.modalities ??
+      (cfg.files?.length
+        ? { input: ['text', 'image'], output: ['text'] }
+        : { input: ['text'], output: ['text'] }),
   };
   const providerDef: Record<string, unknown> = cfg.providerConfig
     ? { ...cfg.providerConfig, models: { [cfg.modelID]: modelDef } }
@@ -176,6 +183,7 @@ export function buildSdkConfig(cfg: KiloWorkerConfig): Record<string, unknown> {
     default_agent: agentName,
     agent: {
       [agentName]: {
+        mode: 'primary',
         model: modelRef,
         // Read-only: no write/shell/edit loop. The enhancer uses the same
         // permission boundary because repository profiling is done locally.
@@ -272,7 +280,7 @@ export async function runKiloInference(cfg: KiloWorkerConfig): Promise<KiloInfer
       if (remaining <= 0) break;
       let result: KiloInferenceResult;
       try {
-        result = await withTimeout((signal: AbortSignal) => runOnce(cfg, config, t0, signal), remaining);
+        result = await withTimeout((signal: AbortSignal) => runKiloCliOnce(cfg, config, scratch, t0, signal), remaining);
       } catch (err) {
         result = {
           ok: false,
@@ -310,106 +318,138 @@ export async function runKiloInference(cfg: KiloWorkerConfig): Promise<KiloInfer
   }
 }
 
-/** Runs the createKilo + session.create + session.prompt pipeline once, abortable. */
-async function runOnce(
+/**
+ * One CLI inference. `kilo run --agent ... --model ... --file ...` is the
+ * same surface the Task Studio enhancer uses and is the compatibility path for
+ * Kilo 7.8 servers whose SDK session ignores a per-prompt model override.
+ * The read-only agent is injected through KILO_CONFIG_CONTENT (merged over the
+ * operator config), so a stale global default model can never replace the
+ * explicit reviewer route. Files are copied into the isolated sandbox first.
+ */
+async function runKiloCliOnce(
   cfg: KiloWorkerConfig,
-  config: ReturnType<typeof buildSdkConfig>,
+  config: Record<string, unknown>,
+  sandbox: string,
   t0: number,
   signal: AbortSignal,
-) {
-  // SDK default server boot timeout is 5s. A 7.8.31 `kilo serve` boot plus MCP
-  // server startup regularly takes 2.5-4s and can exceed 5s under load —
-  // observed as flaky `createKilo boot failed: Timeout waiting for server to
-  // start` that burned real revisions. 30s is a safe boot bound (the inference
-  // itself is bounded separately).
-  ensureHiddenChildSpawns();
-  const created = await createKilo({ port: 0, config: config as never, signal, timeout: 30_000 });
-  const client = created.client;
-  try {
-    const created_ = await client.session.create({ query: { directory: cfg.directory } });
-    const sessionID = created_.data?.id;
-    if (!sessionID) fail(`headless Kilo failed to create a session (role=${cfg.role})`);
-
-    // `format` is Kilo's native structured-output contract (OutputFormatJsonSchema).
-    // The bundled SDK types (7.4.x) predate it, but the 7.8.x server accepts the
-    // field and returns the tool-validated payload on the assistant message as
-    // `info.structured`. Send it whenever a contract is configured.
-    const body: Record<string, unknown> = {
-      agent: cfg.agentName ?? 'helldesk-reviewer',
-      model: { providerID: cfg.providerID, modelID: cfg.modelID },
-      system: cfg.system,
-      parts: [{ type: 'text', text: cfg.user }],
-      ...(cfg.format ? { format: cfg.format } : {}),
-    };
-    const res = await client.session.prompt({
-      path: { id: sessionID },
-      query: { directory: cfg.directory },
-      body: body as never,
-    });
-    if (cfg.role === 'sizer' && process.env.HELLDESK_KILO_DEBUG) {
+): Promise<KiloInferenceResult> {
+  const attached: string[] = [];
+  if (cfg.files?.length) {
+    const attachDir = join(sandbox, 'attachments');
+    mkdirSync(attachDir, { recursive: true });
+    for (const file of cfg.files) {
       try {
-        const dir = join(cfg.snapshotStore, '_sizing');
-        mkdirSync(dir, { recursive: true });
-        writeFileSync(join(dir, 'last-response.json'), JSON.stringify(res, null, 2), 'utf8');
-      } catch { /* diagnostics only */ }
+        const destination = join(attachDir, `${attached.length}-${basename(file)}`);
+        copyFileSync(file, destination);
+        attached.push(destination);
+      } catch {
+        /* skip unreadable attached files */
+      }
     }
+  }
+  const fileArgs = attached.flatMap((file) => ['--file', file]);
+  const prompt = [
+    cfg.system,
+    '',
+    cfg.user,
+    ...(attached.length
+      ? ['', `Attached input files (in order): ${attached.map((file) => basename(file)).join(', ')}. Compare the requirement reference image(s) with the evidence screenshot(s) where both are present.`]
+      : []),
+    '',
+    'Return ONLY the strict JSON object requested by the user message. No prose, no markdown fences, no commentary.',
+  ].join('\n');
+  const agentName = cfg.agentName ?? 'helldesk-reviewer';
+  // Keep the CLI env config to the read-only agent definition. Providers and
+  // the selected model come from the explicit --model route + operator config;
+  // replaying a full SDK config into the CLI merges conflicting keys and can
+  // make the CLI exit before the model call.
+  const cliConfig = { agent: config.agent };
+  const args = [
+    'run',
+    '--pure',
+    '--agent', agentName,
+    '--model', `${cfg.providerID}/${cfg.modelID}`,
+    '--dir', sandbox,
+    ...fileArgs,
+  ];
 
-    type AnyResult = { [k: string]: any };
-    const rr = res as unknown as AnyResult;
-    // The SDK can return a transport/server error envelope (`{error:{...}}`)
-    // instead of a prompt result. Treat it as a failed inference; otherwise an
-    // empty `parts` array masquerades as a successful empty model response.
-    if (rr.error) {
-      const err = rr.error;
-      const message =
-        (typeof err === 'string' ? err : err?.data?.message ?? err?.message) ??
-        'Kilo prompt failed';
-      const ref = typeof err === 'object' && err?.data?.ref ? ` (ref ${err.data.ref})` : '';
-      return {
+  return await new Promise<KiloInferenceResult>((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (result: KiloInferenceResult): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      signal.removeEventListener('abort', abort);
+      resolve(result);
+    };
+    const abort = (): void => {
+      try { child.kill(); } catch { /* best effort */ }
+      finish({
         ok: false,
-        text: '',
+        text: stdout,
         providerID: cfg.providerID,
         modelID: cfg.modelID,
-        error: `${message}${ref}`,
+        error: 'kilo CLI inference aborted',
         tookMs: Date.now() - t0,
-      };
-    }
-    const info = rr.data?.info ?? rr.info;
-    const parts: Array<{ type?: string; text?: string }> = rr.data?.parts ?? rr.parts ?? [];
-    const text = parts.filter((p) => p?.type === 'text').map((p) => p?.text ?? '').join('\n').trim();
-    const structured = structuredFromPromptResponse(res);
-
-    const tookMs = Date.now() - t0;
-    if (info?.error) {
-      return {
-        ok: false,
-        text,
-        structured,
-        providerID: info.providerID ?? cfg.providerID,
-        modelID: info.modelID ?? cfg.modelID,
-        tokensIn: info.tokens?.input,
-        tokensOut: info.tokens?.output,
-        cost: info.cost,
-        finish: info.finish,
-        error: typeof info.error === 'string' ? info.error : JSON.stringify(info.error),
-        tookMs,
-      };
-    }
-    return {
-      ok: true,
-      text,
-      structured,
-      providerID: info?.providerID ?? cfg.providerID,
-      modelID: info?.modelID ?? cfg.modelID,
-      tokensIn: info?.tokens?.input,
-      tokensOut: info?.tokens?.output,
-      cost: info?.cost,
-      finish: info?.finish,
-      tookMs,
+      });
     };
-  } finally {
-    try { created.server.close(); } catch { /* best effort */ }
-  }
+    const child = spawn(cfg.kiloBin, args, {
+      cwd: sandbox,
+      windowsHide: true,
+      env: { ...process.env, KILO_CONFIG_CONTENT: JSON.stringify(cliConfig) },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    signal.addEventListener('abort', abort, { once: true });
+    timer = setTimeout(() => {
+      try { child.kill(); } catch { /* best effort */ }
+      finish({
+        ok: false,
+        text: stdout,
+        providerID: cfg.providerID,
+        modelID: cfg.modelID,
+        error: `kilo CLI inference timed out after ${Math.round((Date.now() - t0) / 1000)}s`,
+        tookMs: Date.now() - t0,
+      });
+    }, 20 * 60_000);
+    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.on('error', (error) => {
+      finish({
+        ok: false,
+        text: stdout,
+        providerID: cfg.providerID,
+        modelID: cfg.modelID,
+        error: `kilo CLI spawn failed: ${error.message}`,
+        tookMs: Date.now() - t0,
+      });
+    });
+    child.on('close', (code) => {
+      if (code === 0) {
+        finish({
+          ok: true,
+          text: stdout.trim(),
+          providerID: cfg.providerID,
+          modelID: cfg.modelID,
+          tookMs: Date.now() - t0,
+        });
+        return;
+      }
+      const detail = (stderr.trim() || stdout.trim()).slice(-800);
+      finish({
+        ok: false,
+        text: stdout,
+        providerID: cfg.providerID,
+        modelID: cfg.modelID,
+        error: `kilo CLI exited ${code}${detail ? `: ${detail}` : ''}`,
+        tookMs: Date.now() - t0,
+      });
+    });
+    child.stdin?.write(prompt);
+    child.stdin?.end();
+  });
 }
 
 /** Resolve fn(Signal) or reject with a timeout error. Fires the passed-in signal on timeout. */

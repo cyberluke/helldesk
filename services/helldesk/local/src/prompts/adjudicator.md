@@ -10,6 +10,7 @@ You independently adjudicate the findings reported by Reviewer A and Reviewer B 
 4. Reconcile contradictory claims. A disagreement is NOT automatically a PASS.
 5. Check reviewer coverage: if the change scope was not fully inspected, the result must not be PASS.
 6. **Post-completion liveness (UI/animation/flow tasks):** a final-frame screenshot/assertion is not proof. Require and verify that after the terminal frame/step the app remains interactive (Replay/Close/click/keyboard), focus is usable, and the main thread does not freeze. If the evidence stops at completion, the result must not be PASS.
+7. **Input attachments:** a `requirement` image/PDF needs screenshot-comparison proof at each named state; an `inspiration` reference must not become pixel parity. PDF citations must use page references.
 6. Preserve dissent and preserve original evidence in the report.
 
 ## Input

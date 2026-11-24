@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
   ENHANCER_OUTPUT_JSON_SCHEMA,
   EnhanceRequestSchema,
   EnhancedTaskSchema,
+  buildEnhancerUserPrompt,
   checkEnhanceWorkspace,
+  collectAttachmentFiles,
   enhanceTask,
+  resolveEnhanceSettings,
   type EnhancerModelCall,
   type EnhancerModelRunner,
 } from '../../src/enhancer';
@@ -149,6 +152,78 @@ describe('checkEnhanceWorkspace', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('collectAttachmentFiles', () => {
+  it('attaches only real files from the HELLDESK attachment store', () => {
+    const root = mkdtempSync(join(tmpdir(), 'hd-attach-files-'));
+    try {
+      const storeDir = join(root, 'attachments', 'att_test');
+      mkdirSync(storeDir, { recursive: true });
+      const imagePath = join(storeDir, 'original.png');
+      writeFileSync(imagePath, Buffer.from([1, 2, 3]));
+      const outsidePath = join(root, 'outside.png');
+      writeFileSync(outsidePath, Buffer.from([1, 2, 3]));
+
+      const files = collectAttachmentFiles([
+        {
+          attachment_id: 'att_test',
+          kind: 'image',
+          mode: 'requirement',
+          filename: 'reference.png',
+          original_path: imagePath,
+        },
+        {
+          attachment_id: 'att_out',
+          kind: 'image',
+          mode: 'inspiration',
+          filename: 'outside.png',
+          original_path: outsidePath,
+        },
+      ]);
+
+      expect(files).toEqual([imagePath]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('EnhanceRequestSchema attachment semantics', () => {
+  it('renders requirement vs inspiration and PDF page references in the enhancer prompt', () => {
+    const request = EnhanceRequestSchema.parse({
+      mode: 'text',
+      title: 'Pixel-perfect settings screen',
+      spec: 'Build the settings screen from the reference.',
+      workspace: 'C:/workspace',
+      attachments: [
+        {
+          attachment_id: 'att_req',
+          kind: 'image',
+          mode: 'requirement',
+          filename: 'settings.png',
+          original_path: 'C:/attachments/att_req/original.png',
+          original_url: '/api/departments/default/attachments/att_req/original.png',
+        },
+        {
+          attachment_id: 'att_pdf',
+          kind: 'pdf',
+          mode: 'inspiration',
+          filename: 'style.pdf',
+          page_count: 2,
+          markdown: '## Page 1\nWarm gray background',
+          markdown_path: 'C:/attachments/att_pdf/extracted.md',
+          pages: [{ page: 1, path: 'C:/attachments/att_pdf/page-1.png' }],
+        },
+      ],
+    });
+    const prompt = buildEnhancerUserPrompt(request, resolveEnhanceSettings(request), '');
+    expect(prompt).toContain('REQUIREMENT: pixel-perfect visual target');
+    expect(prompt).toContain('INSPIRATION: style/mechanic reference only');
+    expect(prompt).toContain('Pages: 2');
+    expect(prompt).toContain('## Page 1');
+    expect(prompt).toContain('att_req/original.png');
   });
 });
 

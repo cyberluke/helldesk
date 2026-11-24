@@ -55,8 +55,10 @@ export function missionStateToStatus(state?: string): 'open' | 'in_progress' | '
   return 'open';
 }
 
-/** The local-live runtime's own base (server-side fetch needs an absolute URL). */
-const SELF = 'http://127.0.0.1:8790';
+/** The local-live runtime's own base (server-side fetch needs an absolute URL).
+ *  MUST follow HELLDESK_PORT: a second dashboard on :8792 projects ITS control
+ *  plane, not the production one on :8790. */
+const SELF = `http://${process.env.HELLDESK_HOST ?? '127.0.0.1'}:${process.env.HELLDESK_PORT ?? '8790'}`;
 
 /**
  * Decide whether a projected mission row is a duplicate of a local task ticket

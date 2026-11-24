@@ -4,6 +4,7 @@
 //
 // This is the single transport boundary. Every view consumes these typed fns.
 import { z } from 'zod'
+import type { AttachmentManifest } from './attachments'
 
 const operationResultSchema = z.object({ success: z.boolean().optional(), ok: z.boolean().optional(), error: z.string().optional(), data: z.unknown().optional() }).passthrough()
 export async function operatorRequest(url: string, body?: unknown): Promise<{ success: boolean; error?: string; data?: unknown }> {
@@ -829,6 +830,8 @@ export interface EnhanceTaskInput {
   taskType: TaskType
   delivery: Delivery
   sources: SourceRepoInput[]
+  /** Images/PDFs attached to this task (inspiration or pixel-perfect requirement). */
+  attachments?: AttachmentManifest[]
   /** Previous adversarial QA findings, used by Regenerate with QA fixes. */
   qaFindings?: string[]
 }
@@ -872,6 +875,7 @@ export async function enhanceTaskSpec(input: EnhanceTaskInput): Promise<EnhanceR
         sources: input.sources
           .filter((source) => source.id.trim() && source.path.trim())
           .map((source) => ({ id: source.id.trim(), path: source.path.trim() })),
+        attachments: input.attachments?.length ? input.attachments : undefined,
         qaFindings: input.qaFindings?.length ? input.qaFindings : undefined,
       }),
     })
@@ -943,6 +947,8 @@ export const createTask = async (departmentId: string, workstationId: string, in
   enforcer: Enforcer
   review_mode?: 'ReviewThenLand' | 'ReviewAndMerge'
   depends_on?: string[]
+  /** Images/PDFs attached in Task Studio; stored on the ticket + spec. */
+  attachments?: AttachmentManifest[]
   /** Provider-agnostic per-task engine override: {mutation?:{engine,...}, review?, adjudicate?}.
    *  Stored on the ticket metadata and carried into the mission at dispatch. Unset stages
    *  fall back to the department default engine matrix. */
@@ -953,6 +959,13 @@ export const createTask = async (departmentId: string, workstationId: string, in
     title: input.title,
     body: input.spec,
     depends_on: input.depends_on ?? [],
+  }
+  if (input.attachments?.length) {
+    // Keep the ticket metadata lean: the full PDF markdown lives in the attachment
+    // store and in the spec's bounded block; metadata keeps provenance + paths.
+    body.metadata = {
+      attachments: input.attachments.map(({ markdown: _markdown, ...manifest }) => manifest),
+    }
   }
   if (input.enforcer !== 'auto') {
     body.break_room_controls = { ...enforcerToControls(input.enforcer), review_mode: input.review_mode }

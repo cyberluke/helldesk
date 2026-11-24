@@ -155,3 +155,6 @@ mi-out.txt
 
 # HELLDESK rename codemod (mandatory ignored, per directive)
 /.local/
+
+# M4 dashboard source capture: MP4 is LFS; the committed demo is the GIF/WebP.
+benchmarks/v0/dashboard/media/*.mp4

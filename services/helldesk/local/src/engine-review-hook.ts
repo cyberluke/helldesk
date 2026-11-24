@@ -6,7 +6,7 @@ import { parseEngineMatrix } from './engine-matrix';
 import { loadMergedGlobalConfig } from './config-resolve';
 import { parseModelRef } from './model-resolver';
 import { REPORT_GATES, type ControllerDeps, type ReviewHook, type ReviewVerdict, captureEvidence } from './mission-controller';
-import { getMission, getTicket, getQualityGates, listEvidence, getRepairPlan, getRevision, updateRevision, getMissionReviewControls } from './mission-repository';
+import { getMission, getTicket, getQualityGates, listEvidence, getRepairPlan, getRevision, updateRevision, getMissionReviewControls, listGateExecutions } from './mission-repository';
 import { validateReviewControls } from './review-controls';
 import { loadManifest } from './context-reader';
 import { extractJsonObject } from './reviewers';
@@ -47,6 +47,11 @@ export function makeEngineReviewHook(engine: Engine, gateKeys: string[] = REPORT
     const controlsError = validateReviewControls(controls);
     if (controlsError) throw new Error(`invalid review policy for mission ${missionId}: ${controlsError}`);
     const priorGates = getQualityGates(engine.d, revisionId);
+    // Host-executed gates for THIS revision. The controller runs them before
+    // invoking this hook, so the reviewer sees real execution provenance and
+    // cannot be fooled by a mutator's fabricated test log.
+    const executedGates = listGateExecutions(engine.d, revisionId);
+    const executedByGate = new Map(executedGates.map((e) => [e.gate_key, e]));
     const repairPlan = getRepairPlan(engine.d, revisionId);
     // Requirements WITHOUT the evidence manifest (evidence is captured from the
     // immutable snapshot right AFTER createAndEnqueue, then the persisted meta is
@@ -60,6 +65,12 @@ export function makeEngineReviewHook(engine: Engine, gateKeys: string[] = REPORT
       `ticket: ${ticket?.title ?? ''} — ${ticket?.objective ?? ''}`,
       `REVISION being reviewed: ${revisionId}`,
       `MANDATORY GATES (10/10 requires ALL PASS each with REPRO of a resolved evidence artifact, never an unsupported claim): ${gates.join(', ')}`,
+      executedGates.length
+        ? [
+            'EXECUTED GATES (host-run by the independent gate-runner; a reviewer may FAIL a passing execution on real code grounds, but may NEVER PASS an executed FAIL):',
+            ...executedGates.map((e) => `  - ${e.gate_key}: ${e.status} exit=${e.exit_code ?? 'null'} duration=${e.duration_ms}ms evidence=${e.evidence_artifact_id} candidate=${e.candidate_hash.slice(0, 12)}`),
+          ].join('\n')
+        : 'EXECUTED GATES: none (no mission-defined executable gate).',
       priorGates.length ? `PRIOR GATE STATE on this revision: ${priorGates.map((g) => `${g.gate_key}=${g.status}`).join(', ')}` : `PRIOR GATE STATE: none (first review of this revision)`,
       repairPlan ? `REPAIR PLAN: ${repairPlan.plan_json ?? '(none)'} (hypothesis=${repairPlan.hypothesis_key ?? ''}, failure_signature=${(repairPlan.failure_signature ?? '').slice(0, 80)})` : 'REPAIR PLAN: (n/a)',
       requirementChecklist,
@@ -210,7 +221,6 @@ export function makeEngineReviewHook(engine: Engine, gateKeys: string[] = REPORT
     // and is exactly what Option A's oracle stamping is designed to override.
     const isSyntheticConvergence = (t: string) => /failed to converge after \d+ attempts/i.test(t);
     const hasRealBlockingFinding = findings.some((f) => (f.severity === 'BLOCKER' || f.severity === 'HIGH') && !isSyntheticConvergence(f.title));
-    const hasBlockingFinding = hasRealBlockingFinding || findings.some((f) => f.severity === 'BLOCKER');
     const resolvableEvidence = evidence.filter((e) => e.bytes > 0 && e.sha256.length === 64).map((e) => e.artifact_id);
     // Option A (CTO-confirmed): the independent executable ORACLE + real evidence
     // is authoritative for the correctness gates. A conservative reviewer that
@@ -223,25 +233,41 @@ export function makeEngineReviewHook(engine: Engine, gateKeys: string[] = REPORT
     // preserved — we execute independently and require real bytes + sha256; a real
     // BLOCKER/HIGH code finding still blocks (never oracle-overridden).
     const reviewerFoundNothingReal = (verdict === 'INCONCLUSIVE' || verdict === 'FINDINGS') && !hasRealBlockingFinding;
-    // Async (non-blocking): the oracle child runs up to 10 minutes; awaiting an
-    // async spawn keeps the event loop alive so keep-alives / SSE progress
+    // Execution gates are the authoritative proof when the mission defines them.
+    // The legacy hardcoded oracle (fixed filenames in the live workspace) is used
+    // ONLY for missions with no executable gate commands; it is not a substitute
+    // for revision-bound host execution.
+    const executedAllPass = executedGates.length > 0 && executedGates.every((e) => e.status === 'PASS');
+    // Async (non-blocking): the legacy oracle child runs up to 10 minutes; awaiting
+    // an async spawn keeps the event loop alive so keep-alives / SSE progress
     // continue flowing on serverless / tunneled deployments (a blocking spawnSync
     // would freeze every heartbeat and drop the tunnel).
-    const oraclePass = reviewerFoundNothingReal ? await runTestOracle(workspacePath, evidence) : false;
+    const oraclePass = executedGates.length > 0
+      ? (executedAllPass && !hasRealBlockingFinding)
+      : (reviewerFoundNothingReal ? await runTestOracle(workspacePath, evidence) : false);
     const gatePassed: Record<string, boolean> = {};
     const gateEvidenceRefs: Record<string, string[]> = {};
     for (const k of gates) {
-      const pass = (verdict === 'PASS' && !hasRealBlockingFinding && resolvableEvidence.length > 0) || oraclePass;
+      const exec = executedByGate.get(k);
+      // A failed execution is FINAL for that gate: no reviewer PASS can rescue it.
+      // A passing execution can still be failed by a real BLOCKER/HIGH finding.
+      const legacyPass = (verdict === 'PASS' && !hasRealBlockingFinding && resolvableEvidence.length > 0) || oraclePass;
+      const pass = exec ? (exec.status === 'PASS' && !hasRealBlockingFinding) : legacyPass;
       gatePassed[k] = pass;
-      // Bind a defensible evidence set to the gate (the resolved artifacts that
-      // reproduce this gate's guarantee). Every mandatory gate shares the full
-      // resolved evidence set; the reviewer prompt demanded per-gate citation,
-      // and a PASS with zero bytes/odd hash for ANY gate is refused.
-      gateEvidenceRefs[k] = pass ? resolvableEvidence : [];
+      // Bind a defensible evidence set to the gate: the host execution artifact
+      // plus the resolved content artifacts the reviewer could inspect. A PASS
+      // with zero bytes/odd hash for ANY gate is still refused by the controller.
+      gateEvidenceRefs[k] = pass
+        ? [...new Set([...(exec ? [exec.evidence_artifact_id] : []), ...resolvableEvidence])]
+        : (exec ? [exec.evidence_artifact_id] : []);
     }
-    const evidenceResolvedPass = verdict === 'PASS' && !hasBlockingFinding && resolvableEvidence.length > 0;
-    const evidenceResolved = (verdict === 'INCONCLUSIVE' || verdict === 'PASS') && resolvableEvidence.length > 0;
+    const evidenceResolved = executedGates.length > 0
+      ? executedAllPass
+      : ((verdict === 'INCONCLUSIVE' || verdict === 'PASS') && resolvableEvidence.length > 0);
     const effectiveVerdict: ReviewVerdict = oraclePass ? 'PASS' : verdict;
+    const executedFindings = executedGates
+      .filter((e) => e.status !== 'PASS')
+      .map((e) => `[BLOCKER] EXECUTED GATE ${e.gate_key} ${e.status} (exit=${e.exit_code ?? 'null'}): ${e.command}`);
     mirrorReviewToChat(engine, {
       missionId,
       ticketId,
@@ -255,7 +281,7 @@ export function makeEngineReviewHook(engine: Engine, gateKeys: string[] = REPORT
       mandatoryGates: gates,
       gatePassed,
       gateEvidenceRefs,
-      findings: findings.map((f) => `[${f.severity}] ${f.title}`),
+      findings: [...findings.map((f) => `[${f.severity}] ${f.title}`), ...executedFindings],
       evidenceResolved,
       snapshotId: job?.snapshotId ?? null,
       reviewJobId: jobId,

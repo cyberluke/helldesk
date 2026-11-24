@@ -42,6 +42,8 @@ const MIGRATIONS: Array<{ version: number; file: string }> = [
   { version: 18, file: '0018_human_acceptance.sql' },
   { version: 19, file: '0019_awaiting_acceptance_state.sql' },
   { version: 20, file: '0020_task_sizing.sql' },
+  { version: 21, file: '0021_gate_executions.sql' },
+  { version: 22, file: '0022_mission_baseline.sql' },
 ];
 
 /** Latest schema version shipped by this package (used by the doctor). */

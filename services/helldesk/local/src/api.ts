@@ -20,6 +20,7 @@ import {
 import { TSHIRT_POINTS, TSHIRT_SIZES, type TShirtSize } from './task-sizer';
 import { mergeReviewControls, normalizeReviewControls, parseReviewControls, validateReviewControls } from './review-controls';
 import { getMissionReport } from './mission-report';
+import { captureMissionBaseline } from './mission-baseline';
 import { reReviewMission } from './mission-review-service';
 import { registerWorkspace, getWorkspace } from './workspace-registry';
 import { sampleMutationActivity, countTrackedFiles } from './mutation-activity';
@@ -548,7 +549,51 @@ const revMatch = /^\/v1\/missions\/([^/]+)\/revisions$/.exec(url.pathname);
   if (method === 'POST' && url.pathname === '/v1/missions') {
     const body = await safeJson(req);
     if (!body) return json({ error: 'invalid_json' }, 400);
-    const parsed = z.object({ workspaceId: z.string().min(1), objective: z.string().min(1), idempotencyKey: z.string().min(1).max(160).optional(), taskGates: z.array(z.string().min(1)).min(1).max(100).optional(), tickets: z.array(z.object({
+    const browserGateCheckSchema = z.object({
+      type: z.enum(['selectorInViewport', 'selectorExists', 'textEquals', 'clickText']),
+      selector: z.string().min(1).max(500),
+      text: z.string().max(500).optional(),
+      expectSelector: z.string().max(500).optional(),
+      expectText: z.string().max(500).optional(),
+    });
+    const browserGateSchema = z.object({
+      url: z.string().min(1).max(2000),
+      server: z.object({
+        command: z.string().min(1).max(4000),
+        url: z.string().min(1).max(2000),
+        timeoutMs: z.number().int().min(1000).max(600000).optional(),
+      }).optional(),
+      viewport: z.object({
+        width: z.number().int().min(320).max(7680),
+        height: z.number().int().min(240).max(4320),
+        deviceScaleFactor: z.number().min(1).max(4).optional(),
+      }).optional(),
+      stageSelector: z.string().min(1).max(500).optional(),
+      checks: z.array(browserGateCheckSchema).min(1).max(50),
+      screenshot: z.object({
+        golden: z.string().min(1).max(500),
+        maxDiffRatio: z.number().min(0).max(1).optional(),
+      }).optional(),
+      mcpUrl: z.string().min(1).max(2000).optional(),
+      mcpTimeoutMs: z.number().int().min(1000).max(600000).optional(),
+      timeoutMs: z.number().int().min(1000).max(900000).optional(),
+    });
+    const gateCommandSchema = z.object({
+      command: z.string().min(1).max(4000).optional(),
+      browser: browserGateSchema.optional(),
+      timeoutMs: z.number().int().min(1000).max(900000).optional(),
+      cwd: z.string().min(1).max(400).optional(),
+      protectedPaths: z.array(z.string().min(1).max(500)).max(100).optional(),
+      expectedArtifacts: z.array(z.string().min(1).max(500)).max(100).optional(),
+    }).superRefine((value, ctx) => {
+      if (!value.command && !value.browser) {
+        ctx.addIssue({ code: 'custom', message: 'gate requires a command or a browser spec' });
+      }
+      if (value.command && value.browser) {
+        ctx.addIssue({ code: 'custom', message: 'gate accepts a command or a browser spec, not both' });
+      }
+    });
+    const parsed = z.object({ workspaceId: z.string().min(1), objective: z.string().min(1), idempotencyKey: z.string().min(1).max(160).optional(), taskGates: z.array(z.string().min(1)).min(1).max(100).optional(), gateCommands: z.record(z.string().min(1).max(120), gateCommandSchema).optional(), protectedPaths: z.array(z.string().min(1).max(500)).max(200).optional(), allowProtectedPaths: z.array(z.string().min(1).max(500)).max(200).optional(), tickets: z.array(z.object({
       title: z.string().optional(),
       objective: z.string().optional(),
       dependsOn: z.array(z.string()).optional(),
@@ -568,6 +613,16 @@ const revMatch = /^\/v1\/missions\/([^/]+)\/revisions$/.exec(url.pathname);
     const controls = normalizeReviewControls(b.controls);
     const controlsError = validateReviewControls(controls);
     if (controlsError) return json({ error: 'invalid_review_controls', message: controlsError }, 400);
+    const taskGates = b.taskGates || ['full_task_scope', 'functional_behavior', 'regression_checks', 'artifact_provenance'];
+    const gateCommands = b.gateCommands ?? {};
+    const gateKeysMissingFromTaskGates = Object.keys(gateCommands).filter((key) => !taskGates.includes(key));
+    if (gateKeysMissingFromTaskGates.length > 0) {
+      return json({
+        error: 'gate_commands_not_in_task_gates',
+        message: 'Every executable gate command must also be a mandatory task gate.',
+        missing: gateKeysMissingFromTaskGates,
+      }, 400);
+    }
     const rawTickets = Array.isArray(b.tickets) && b.tickets.length ? b.tickets : [{ title: 'B1', objective: b.objective, dependsOn: [] }];
     type MissionTicketInput = Parameters<typeof createMissionRequest>[1]['tickets'][number];
     const tickets: MissionTicketInput[] = [];
@@ -606,8 +661,27 @@ const revMatch = /^\/v1\/missions\/([^/]+)\/revisions$/.exec(url.pathname);
         sizingState,
       });
     }
+    let baseline = null;
+    if (Object.keys(gateCommands).length > 0) {
+      const missionProtectedPaths = [
+        ...(b.protectedPaths ?? []),
+        ...Object.values(gateCommands).flatMap((gate) => gate.protectedPaths ?? []),
+      ];
+      try {
+        baseline = captureMissionBaseline({
+          workspacePath: ws.path,
+          protectedPaths: missionProtectedPaths,
+          allowProtectedPaths: b.allowProtectedPaths ?? [],
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return json({ error: 'baseline_capture_failed', message }, 400);
+      }
+    }
     const result = createMissionRequest(ctx.d, { workspaceId: ws.workspaceId, objective: b.objective,
-      idempotencyKey: b.idempotencyKey, taskGates: b.taskGates || ['full_task_scope', 'functional_behavior', 'regression_checks', 'artifact_provenance'],
+      idempotencyKey: b.idempotencyKey, taskGates,
+      gateCommands, baseline,
+      protectedPaths: b.protectedPaths, allowProtectedPaths: b.allowProtectedPaths,
       engineMatrix: b.engineMatrix, controls,
       tickets });
     if (result.conflict) return json({ error: 'idempotency_conflict', message: 'This task identity already belongs to a different mission request' }, 409);

@@ -45,6 +45,7 @@ import { spawnReviewWorker, awaitWorkerResult } from './worker-supervisor';
 import { writeReport } from './reports';
 import { enqueueEvent } from './events';
 import { REVIEW_MAX_ATTEMPTS } from './review-retry';
+import { collectReviewFiles } from './review-attachments';
 import { generateId } from './ids';
 import { createTelemetry, type Telemetry } from './telemetry';
 import { writeFileSync } from 'node:fs';
@@ -986,6 +987,13 @@ export class Engine {
       providerID: opts.roleModel.providerID,
       modelID: opts.roleModel.modelID,
     });
+    // Text/metadata driven vision: requirement attachments are absolute paths in
+    // the spec block; committed evidence screenshots are discovered in the
+    // reviewed workspace. Reviewers, adjudicator and governor see both.
+    const reviewFiles = collectReviewFiles({
+      requirements: opts.requirement ?? '',
+      workspace: opts.workspacePath ?? '',
+    });
     spawnReviewWorker({
       d: this.d,
       jobId: opts.jobId,
@@ -1003,6 +1011,7 @@ export class Engine {
       controlToken,
       workspace: opts.workspacePath,
       userOverride: opts.combined,
+      files: reviewFiles,
     });
     const workerResult = await awaitWorkerResult(
       opts.attemptId,

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { z } from 'zod';
 import { extractJsonObject } from './reviewers';
 import { isUnsupportedStructuredOutput } from './review-contract';
@@ -95,6 +95,28 @@ export const EnhanceSourceSchema = z.object({
   path: z.string().trim().min(1).max(4096),
 });
 
+const EnhanceAttachmentSchema = z.object({
+  attachment_id: z.string().trim().min(1).max(80),
+  kind: z.enum(['image', 'pdf']),
+  mode: z.enum(['inspiration', 'requirement']),
+  filename: z.string().trim().min(1).max(255),
+  mime: z.string().max(160).optional(),
+  size: z.number().nonnegative().optional(),
+  sha256: z.string().max(128).optional(),
+  page_count: z.number().int().nonnegative().nullable().optional(),
+  markdown: z.string().max(200_000).nullable().optional(),
+  markdown_url: z.string().max(4096).nullable().optional(),
+  markdown_path: z.string().max(4096).nullable().optional(),
+  original_url: z.string().max(4096).optional(),
+  original_path: z.string().max(4096).optional(),
+  pages: z.array(z.object({
+    page: z.number().int().min(1),
+    url: z.string().max(4096).optional(),
+    path: z.string().max(4096).optional(),
+  })).max(40).optional(),
+  created_at: z.string().max(80).optional(),
+});
+
 export const EnhanceRequestSchema = z.object({
   mode: EnhanceModeSchema,
   title: z.string().trim().min(1).max(400),
@@ -106,6 +128,8 @@ export const EnhanceRequestSchema = z.object({
   taskType: TaskTypeSchema.optional(),
   delivery: DeliverySchema.optional(),
   sources: z.array(EnhanceSourceSchema).max(20).optional(),
+  /** Images/PDFs from Task Studio. Mode decides inspiration vs pixel-parity. */
+  attachments: z.array(EnhanceAttachmentSchema).max(8).optional(),
   /** Findings from the previous adversarial QA pass, used by Regenerate. */
   qaFindings: z.array(z.string().trim().min(1).max(2000)).max(12).optional(),
 });
@@ -311,6 +335,9 @@ export function enhancerResponseFormatChain(): Array<Record<string, unknown> | u
 export interface EnhancerModelCall {
   system: string;
   user: string;
+  /** Local image/page files the Kilo CLI attaches to this message (`--file`).
+   *  Only files from the HELLDESK attachment store are allowed. */
+  files?: string[];
 }
 
 export type EnhancerModelResult =
@@ -445,7 +472,7 @@ export function createOpenAiEnhancerRunner(opts: {
       task: 'deny',
       todo: 'deny',
       notebook: 'deny',
-      read: 'deny',
+      read: 'allow',
       grep: 'deny',
       glob: 'deny',
       list: 'deny',
@@ -460,7 +487,7 @@ export function createOpenAiEnhancerRunner(opts: {
           permission: readOnlyPermission,
           prompt: [
             'You are a read-only task-spec enhancer.',
-            'You have NO tools and must not call any. All repository context is embedded in the prompt.',
+            'You may read ONLY the attached input files copied into your sandbox. Do not call shell, edit, network or repository tools. All repository context is embedded in the prompt.',
             'Never modify files. Return only the requested JSON object.',
           ].join(' '),
         },
@@ -472,7 +499,7 @@ export function createOpenAiEnhancerRunner(opts: {
           prompt: [
             'You are the adversarial product owner and independent QA reviewer for task specs.',
             'You are not the author. Treat the proposed spec as untrusted.',
-            'You have NO tools and must not call any. Reject scope reduction, invention and untestable acceptance.',
+            'You may read ONLY the attached input files copied into your sandbox. Do not call shell, edit, network or repository tools. Reject scope reduction, invention and untestable acceptance.',
             'Return only the requested QA JSON object. Keep it short: verdict, a 2-sentence summary, at most 6 findings.',
           ].join(' '),
         },
@@ -481,13 +508,30 @@ export function createOpenAiEnhancerRunner(opts: {
 
   return {
     async run(call) {
+      // `kilo run --file` is still an agent tool call and the enhancer agent
+      // denies external_directory. Copy inputs INTO the isolated sandbox, then
+      // attach the in-workspace copies. The sandbox is removed by the caller.
+      const attachedFiles: string[] = [];
+      if (call.files?.length) {
+        const attachDir = join(opts.directory, 'attachments');
+        mkdirSync(attachDir, { recursive: true });
+        call.files.forEach((file, index) => {
+          const destination = join(attachDir, `${index}-${basename(file)}`);
+          copyFileSync(file, destination);
+          attachedFiles.push(destination);
+        });
+      }
       const prompt = [
         call.system,
         '',
         call.user,
+        ...(attachedFiles.length
+          ? ['', `Attached input files (in order): ${attachedFiles.map((file) => basename(file)).join(', ')}`]
+          : []),
         '',
         'Return ONLY one strict JSON object. No prose, no markdown fences, no commentary.',
       ].join('\n');
+      const fileArgs = attachedFiles.flatMap((file) => ['--file', file]);
 
       return await new Promise<EnhancerModelResult>((resolve) => {
         const child = spawn(opts.kiloBin || 'kilo', [
@@ -496,6 +540,7 @@ export function createOpenAiEnhancerRunner(opts: {
           '--agent', opts.agentName ?? 'helldesk-enhancer',
           '--model', opts.modelRef,
           '--dir', opts.directory,
+          ...fileArgs,
         ], {
           cwd: opts.directory,
           windowsHide: true,
@@ -692,6 +737,7 @@ export function buildEnhancerSystemPrompt(settings: ResolvedEnhanceSettings): st
   lines.push('- State safe defaults as assumptions instead of asking about them.');
   lines.push('- Write concrete, testable statements. Avoid generic advice and filler.');
   lines.push('- UI/animation/flow tasks: minimumProof MUST include post-completion interaction/liveness — after the terminal frame/step, Replay/Close/click/keyboard still work, focus is usable, and the app does not freeze. A final-frame screenshot/assertion is not proof.');
+  lines.push('- Input attachments: a requirement image/PDF is a pixel-perfect visual target; minimumProof MUST include a screenshot comparison at each named state. An inspiration attachment is a style/mechanic reference only — never impose pixel parity. Cite PDF page numbers when using extracted text.');
   lines.push('- The spec must be Markdown.');
   lines.push('');
 
@@ -740,6 +786,34 @@ export function buildEnhancerSystemPrompt(settings: ResolvedEnhanceSettings): st
   return lines.join('\n');
 }
 
+function appendAttachmentPromptLines(lines: string[], attachments: EnhanceRequest['attachments']): void {
+  if (!attachments?.length) return;
+  lines.push('');
+  lines.push('## Input attachments');
+  for (const attachment of attachments) {
+    lines.push(`### ${attachment.filename} — ${attachment.kind} — ${attachment.mode}`);
+    lines.push(
+      attachment.mode === 'requirement'
+        ? 'REQUIREMENT: pixel-perfect visual target. Proof MUST include a screenshot comparison at each named state; visual differences are findings.'
+        : 'INSPIRATION: style/mechanic reference only. Do not impose pixel parity.',
+    );
+    if (attachment.page_count != null) lines.push(`Pages: ${attachment.page_count}`);
+    if (attachment.original_path) {
+      lines.push(`Original: ${attachment.original_path}${attachment.original_url ? ` (${attachment.original_url})` : ''}`);
+    }
+    if (attachment.markdown_path) {
+      lines.push(`Extracted markdown: ${attachment.markdown_path}${attachment.markdown_url ? ` (${attachment.markdown_url})` : ''}`);
+    }
+    if (attachment.pages?.length) {
+      lines.push(`Page images: ${attachment.pages.map((page) => `${page.page}:${page.path ?? page.url ?? ''}`).join(', ')}`);
+    }
+    if (attachment.markdown) {
+      lines.push('', 'Extracted text (bounded):', attachment.markdown.slice(0, 8_000));
+    }
+  }
+  lines.push('', 'A requirement attachment needs screenshot-comparison proof; an inspiration attachment must not become a pixel-parity requirement. PDF citations must use page references.');
+}
+
 export function buildEnhancerUserPrompt(
   request: EnhanceRequest,
   settings: ResolvedEnhanceSettings,
@@ -761,6 +835,7 @@ export function buildEnhancerUserPrompt(
     lines.push('## Source repositories (read-only)');
     for (const source of request.sources) lines.push(`- ${source.id}: ${source.path}`);
   }
+  appendAttachmentPromptLines(lines, request.attachments);
 
   lines.push('');
   lines.push('## Brief');
@@ -813,6 +888,7 @@ export function buildQaSystemPrompt(): string {
     '9. No contradiction: never require a technology or surface the brief excludes. If non-goals say no 3D, there is no 3D proof. If the brief is a specific game, there is no genre-agnostic boundary test.',
     '10. Post-completion liveness: for UI/animation/flow tasks, reject a spec whose minimum proof stops at the final frame. It must require post-completion interaction (Replay/Close/click/keyboard), usable focus and no main-thread freeze.',
     '11. Browser evidence: if a BrowserOS/browser-automation MCP is available, use it to exercise the real UI (post-completion clicks/keyboard/focus). If it is stale or unavailable, report that as an evidence limitation; never treat an unavailable browser as a PASS.',
+    '12. Attachments: a requirement image/PDF must appear in minimumProof as screenshot-comparison proof; an inspiration reference must not become a pixel-parity requirement. PDF citations must use page references.',
     '',
     'A PASS requires every check to pass and no blocker/major finding to remain.',
     'Use REVISE for fixable gaps. Use REJECT for a wrong product, wrong scope, wrong write target, or an invented deliverable.',
@@ -874,6 +950,7 @@ export function buildQaUserPrompt(
     lines.push('## Source repositories (read-only)');
     for (const source of request.sources) lines.push(`- ${source.id}: ${source.path}`);
   }
+  appendAttachmentPromptLines(lines, request.attachments);
   lines.push('');
   lines.push('## Brief (verbatim)');
   lines.push(request.spec);
@@ -961,12 +1038,14 @@ async function runQaReview(
   const system = buildQaSystemPrompt();
   const userBudget = Math.max(2_000, qaPromptBudget - system.length);
   const user = buildQaUserPrompt(request, settings, enhanced, analysis, userBudget);
+  const attachmentFiles = collectAttachmentFiles(request.attachments);
+  const withFiles = attachmentFiles.length ? { files: attachmentFiles } : {};
   const startedAt = Date.now();
-  let first = await runner.run({ system, user });
+  let first = await runner.run({ system, user, ...withFiles });
   // A dropped provider socket is not a QA verdict. Retry once, but never
   // double a timeout (that would blow the operator's approval budget).
   if (!first.ok && isTransientQaError(first.error ?? '') && Date.now() - startedAt < 90_000) {
-    first = await runner.run({ system, user });
+    first = await runner.run({ system, user, ...withFiles });
   }
   if (!first.ok) {
     return {
@@ -978,7 +1057,7 @@ async function runQaReview(
   const firstParsed = parseQaReview(first.text);
   if (firstParsed.ok) return firstParsed.value;
   const repairUser = fitPromptToBudget(buildQaRepairPrompt(user, first.text, firstParsed.error), userBudget);
-  const repaired = await runner.run({ system, user: repairUser });
+  const repaired = await runner.run({ system, user: repairUser, ...withFiles });
   if (!repaired.ok) {
     return {
       verdict: 'UNAVAILABLE',
@@ -1371,9 +1450,42 @@ function parseModelOutput(text: string): ParseResult {
  * Throws on model failure or irreparable invalid output; the HTTP layer maps
  * that to 502. Never writes to any repository.
  */
+/**
+ * Local image/page files from the HELLDESK attachment store that a vision
+ * enhancer/QA call may attach. Strictly bounded: store paths only, real files,
+ * ≤8MB each, at most four files (images or PDF page renders).
+ */
+export function collectAttachmentFiles(attachments: EnhanceRequest['attachments']): string[] {
+  const files: string[] = [];
+  const seen = new Set<string>();
+  for (const attachment of attachments ?? []) {
+    const candidates =
+      attachment.kind === 'pdf'
+        ? (attachment.pages ?? []).slice(0, 3).map((page) => page.path)
+        : [attachment.original_path];
+    for (const filePath of candidates) {
+      if (!filePath || seen.has(filePath)) continue;
+      if (!/[\\/]attachments[\\/]att_[A-Za-z0-9]+[\\/]/i.test(filePath)) continue;
+      if (!existsSync(filePath)) continue;
+      try {
+        const size = statSync(filePath).size;
+        if (size <= 0 || size > 8 * 1024 * 1024) continue;
+      } catch {
+        continue;
+      }
+      seen.add(filePath);
+      files.push(filePath);
+      if (files.length >= 4) return files;
+    }
+  }
+  return files;
+}
+
 export async function enhanceTask(request: EnhanceRequest, deps: EnhanceDeps): Promise<EnhanceResult> {
   const startedAt = Date.now();
   const settings = resolveEnhanceSettings(request);
+  const attachmentFiles = collectAttachmentFiles(request.attachments);
+  const withFiles = attachmentFiles.length ? { files: attachmentFiles } : {};
 
   const enhancerPromptBudget = deps.enhancerBudget?.promptCharBudget ?? DEFAULT_ENHANCE_PROMPT_BUDGET.promptCharBudget;
   const system = buildEnhancerSystemPrompt(settings);
@@ -1392,7 +1504,7 @@ export async function enhanceTask(request: EnhanceRequest, deps: EnhanceDeps): P
 
   const user = buildEnhancerUserPrompt(request, settings, repoContext, userBudget);
 
-  const first = await deps.runner.run({ system, user });
+  const first = await deps.runner.run({ system, user, ...withFiles });
   if (!first.ok) throw new Error(`model call failed: ${first.error}`);
   const firstParsed = parseModelOutput(first.text);
 
@@ -1403,6 +1515,7 @@ export async function enhanceTask(request: EnhanceRequest, deps: EnhanceDeps): P
     const repaired = await deps.runner.run({
       system,
         user: fitPromptToBudget(buildRepairUserPrompt(user, first.text, firstParsed.error), userBudget),
+        ...withFiles,
     });
     if (!repaired.ok) throw new Error(`model repair call failed: ${repaired.error}`);
     const secondParsed = parseModelOutput(repaired.text);

@@ -1,0 +1,9 @@
+{
+  "name": "helldesk-v0-fixture",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "scripts": {
+    "test": "node test/counter.test.mjs"
+  }
+}

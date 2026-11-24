@@ -3,6 +3,8 @@ import { generateId, now } from './ids';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { normalizeReviewControls, parseReviewControls, type ReviewControls } from './review-controls';
+import type { MissionBaseline } from './mission-baseline';
+import type { BrowserGateSpec } from './browser-gate';
 
 /**
  * Mission / Ticket / Revision durable repository (Ender long-horizon loop).
@@ -42,6 +44,11 @@ export interface MissionRow {
   current_revision_id: string | null;
   policy_version: string;
   task_gates_json?: string;
+  /** Mission-defined executable gate commands (migration 0021). Persisted
+   *  out-of-band from the writable workspace so a mutator cannot change them. */
+  gate_commands_json?: string;
+  /** Immutable admission baseline for protected paths (migration 0022). */
+  baseline_json?: string;
   engine_matrix_json?: string;
   /** Per-task review policy (migration 0017): reviewerA/reviewerB/excellenceGovernor/agent gates. */
   controls_json?: string;
@@ -354,6 +361,46 @@ export interface EvidenceRow {
   metadata_json: string | null;
 }
 
+/** A mission-defined executable gate. The command is trusted mission policy,
+ *  never read from the writable workspace. */
+export interface GateCommandSpec {
+  /** Shell command gate. Exactly one of command/browser is required. */
+  command?: string;
+  /** Independent BrowserOS Neo browser gate (functional + visual). */
+  browser?: BrowserGateSpec;
+  timeoutMs?: number;
+  cwd?: string;
+  /** Globs that must NOT change between the revision base and the candidate.
+   *  Defaults in gate-runner: test files and test directories. */
+  protectedPaths?: string[];
+  /** Optional workspace-relative artifacts the command must produce on PASS. */
+  expectedArtifacts?: string[];
+}
+
+export type GateExecutionStatus = 'PASS' | 'FAIL' | 'TIMEOUT' | 'ERROR' | 'BLOCKED';
+
+export interface GateExecutionRow {
+  gate_execution_id: string;
+  revision_id: string;
+  gate_key: string;
+  candidate_hash: string;
+  command: string;
+  cwd: string | null;
+  status: GateExecutionStatus;
+  exit_code: number | null;
+  duration_ms: number;
+  stdout_sha256: string;
+  stderr_sha256: string;
+  stdout_bytes: number;
+  stderr_bytes: number;
+  evidence_artifact_id: string;
+  env_json: string;
+  test_file_hashes_json: string;
+  protected_paths_json: string;
+  started_at: string;
+  finished_at: string;
+}
+
 export interface ClaimRow {
   claim_id: string;
   mission_id: string;
@@ -391,7 +438,15 @@ export function emitMissionEvent(
  * The original request hash remains immutable even when later steering changes
  * the mission objective. A retry never creates a second mutation mission. */
 export function createMissionRequest(d: Db, input: {
-  workspaceId: string; objective: string; taskGates: string[]; idempotencyKey?: string;
+  workspaceId: string; objective: string; taskGates: string[];
+  /** Mission-defined executable gate commands. Persisted out-of-band. */
+  gateCommands?: Record<string, GateCommandSpec>;
+  /** Immutable baseline captured at admission (required for executable gates). */
+  baseline?: MissionBaseline | null;
+  /** Protected globs/authorization are part of the request identity. */
+  protectedPaths?: string[];
+  allowProtectedPaths?: string[];
+  idempotencyKey?: string;
   tickets: Array<{
     title: string;
     objective: string;
@@ -410,8 +465,13 @@ export function createMissionRequest(d: Db, input: {
 }): { conflict: true } | { conflict: false; missionId: string; ticketIds: string[]; reused: boolean } {
   const requestHash = createHash('sha256').update(JSON.stringify({
     workspaceId: input.workspaceId, objective: input.objective,
-    taskGates: input.taskGates, tickets: input.tickets, engineMatrix: input.engineMatrix ?? {},
+    taskGates: input.taskGates, gateCommands: input.gateCommands ?? {},
+    protectedPaths: input.protectedPaths ?? [], allowProtectedPaths: input.allowProtectedPaths ?? [],
+    tickets: input.tickets, engineMatrix: input.engineMatrix ?? {},
   })).digest('hex');
+  if (input.gateCommands && Object.keys(input.gateCommands).length > 0 && !input.baseline) {
+    throw new Error('executable gates require an immutable mission baseline captured at admission');
+  }
   return d.tx(db => {
     if (input.idempotencyKey) {
       const previous = db.query<{ mission_id: string; request_hash: string }, [string]>(
@@ -427,6 +487,7 @@ export function createMissionRequest(d: Db, input: {
     }
     const mission = createMission(d, {
       workspace_id: input.workspaceId, objective: input.objective, taskGates: input.taskGates,
+      gateCommands: input.gateCommands, baseline: input.baseline,
       engineMatrix: input.engineMatrix, controls: input.controls,
     });
     if (input.idempotencyKey) db.query('UPDATE autonomy_missions SET idempotency_key=?, request_hash=? WHERE mission_id=?').run(input.idempotencyKey, requestHash, mission.mission_id);
@@ -449,6 +510,8 @@ export function createMission(
   d: Db,
   input: {
     workspace_id: string; objective: string; policy_version?: string; taskGates?: string[];
+    gateCommands?: Record<string, GateCommandSpec>;
+    baseline?: MissionBaseline | null;
     engineMatrix?: Record<string, unknown>;
     controls?: ReviewControls;
   },
@@ -464,6 +527,8 @@ export function createMission(
     current_revision_id: null,
     policy_version: input.policy_version ?? 'ender-1',
     task_gates_json: JSON.stringify(input.taskGates || []),
+    gate_commands_json: JSON.stringify(input.gateCommands ?? {}),
+    baseline_json: JSON.stringify(input.baseline ?? {}),
     engine_matrix_json: JSON.stringify(input.engineMatrix ?? {}),
     controls_json: JSON.stringify(normalizeReviewControls(input.controls)),
     created_at: ts,
@@ -476,9 +541,9 @@ export function createMission(
   d.tx((t) => {
     t.query(
       /* sql */ `INSERT INTO autonomy_missions
-       (mission_id, workspace_id, objective, state, policy_version, created_at, updated_at, task_gates_json, engine_matrix_json, controls_json)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`
-    ).run(mission.mission_id, mission.workspace_id, mission.objective, mission.state, mission.policy_version, mission.created_at, mission.updated_at, mission.task_gates_json || '[]', mission.engine_matrix_json || '{}', mission.controls_json || '{}');
+       (mission_id, workspace_id, objective, state, policy_version, created_at, updated_at, task_gates_json, gate_commands_json, baseline_json, engine_matrix_json, controls_json)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(mission.mission_id, mission.workspace_id, mission.objective, mission.state, mission.policy_version, mission.created_at, mission.updated_at, mission.task_gates_json || '[]', mission.gate_commands_json || '{}', mission.baseline_json || '{}', mission.engine_matrix_json || '{}', mission.controls_json || '{}');
   });
   emitMissionEvent(d, 'mission.created', { mission_id, objective: input.objective });
   return mission;
@@ -897,18 +962,174 @@ export function getQualityGates(d: Db, revision_id: string): QualityGateRow[] {
     .all(revision_id);
 }
 
+// ── Execution gates (mission-defined, host-run) ─────────────────────────────
+/** Parse the mission's persisted executable gate commands. Invalid entries are
+ *  dropped (fail-closed: a dropped command means no execution evidence, so the
+ *  corresponding gate can never PASS). */
+export function parseGateCommands(raw: string | null | undefined): Record<string, GateCommandSpec> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, GateCommandSpec> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const spec = value as Record<string, unknown>;
+      const command = typeof spec.command === 'string' && spec.command.trim() ? spec.command : undefined;
+      const browser = spec.browser && typeof spec.browser === 'object' && !Array.isArray(spec.browser)
+        ? spec.browser as BrowserGateSpec
+        : undefined;
+      if (!command && !browser) continue;
+      out[key] = {
+        command,
+        browser,
+        timeoutMs: typeof spec.timeoutMs === 'number' && Number.isFinite(spec.timeoutMs) ? spec.timeoutMs : undefined,
+        cwd: typeof spec.cwd === 'string' && spec.cwd.length > 0 ? spec.cwd : undefined,
+        protectedPaths: Array.isArray(spec.protectedPaths)
+          ? spec.protectedPaths.filter((p): p is string => typeof p === 'string' && p.length > 0)
+          : undefined,
+        expectedArtifacts: Array.isArray(spec.expectedArtifacts)
+          ? spec.expectedArtifacts.filter((p): p is string => typeof p === 'string' && p.length > 0)
+          : undefined,
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** The mission's executable gate commands (trusted, outside the workspace). */
+export function getMissionGateCommands(d: Db, missionId: string): Record<string, GateCommandSpec> {
+  const row = d.db
+    .query<{ gate_commands_json: string | null }, [string]>(
+      `SELECT gate_commands_json FROM autonomy_missions WHERE mission_id=?`
+    )
+    .get(missionId);
+  return parseGateCommands(row?.gate_commands_json);
+}
+
+/** The mission's immutable admission baseline. Returns null when absent or
+ *  malformed (the gate runner fails closed: no baseline => BLOCKED). */
+export function getMissionBaseline(d: Db, missionId: string): MissionBaseline | null {
+  const row = d.db
+    .query<{ baseline_json: string | null }, [string]>(
+      `SELECT baseline_json FROM autonomy_missions WHERE mission_id=?`
+    )
+    .get(missionId);
+  if (!row?.baseline_json) return null;
+  try {
+    const parsed = JSON.parse(row.baseline_json) as Partial<MissionBaseline> | null;
+    if (!parsed || parsed.version !== 1) return null;
+    if (!Array.isArray(parsed.protectedPaths) || !Array.isArray(parsed.allowProtectedPaths) || !Array.isArray(parsed.protectedFiles)) return null;
+    return parsed as MissionBaseline;
+  } catch {
+    return null;
+  }
+}
+
+/** Executable gate keys for the mission that owns this revision. */
+export function executableGateKeysForRevision(d: Db, revisionId: string): string[] {
+  try {
+    const row = d.db
+      .query<{ gate_commands_json: string | null }, [string]>(
+        `SELECT m.gate_commands_json
+           FROM ticket_revisions r
+           JOIN mission_tickets t ON t.ticket_id = r.ticket_id
+           JOIN autonomy_missions m ON m.mission_id = t.mission_id
+          WHERE r.revision_id=?`
+      )
+      .get(revisionId);
+    return Object.keys(parseGateCommands(row?.gate_commands_json));
+  } catch {
+    return [];
+  }
+}
+
+export function insertGateExecution(
+  d: Db,
+  input: Omit<GateExecutionRow, 'gate_execution_id'> & { gate_execution_id?: string },
+): GateExecutionRow {
+  const { gate_execution_id, ...rest } = input;
+  const row: GateExecutionRow = {
+    gate_execution_id: gate_execution_id ?? generateId('gex'),
+    ...rest,
+  };
+  d.tx((t) => {
+    t.query(
+      `INSERT INTO gate_executions
+        (gate_execution_id, revision_id, gate_key, candidate_hash, command, cwd, status,
+         exit_code, duration_ms, stdout_sha256, stderr_sha256, stdout_bytes, stderr_bytes,
+         evidence_artifact_id, env_json, test_file_hashes_json, protected_paths_json,
+         started_at, finished_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(
+      row.gate_execution_id, row.revision_id, row.gate_key, row.candidate_hash, row.command,
+      row.cwd, row.status, row.exit_code, row.duration_ms, row.stdout_sha256, row.stderr_sha256,
+      row.stdout_bytes, row.stderr_bytes, row.evidence_artifact_id, row.env_json,
+      row.test_file_hashes_json, row.protected_paths_json, row.started_at, row.finished_at,
+    );
+  });
+  emitMissionEvent(d, 'gate.executed', {
+    revision_id: row.revision_id,
+    gate_key: row.gate_key,
+    status: row.status,
+    exit_code: row.exit_code,
+    candidate_hash: row.candidate_hash,
+    evidence_artifact_id: row.evidence_artifact_id,
+  });
+  return row;
+}
+
+export function listGateExecutions(d: Db, revisionId: string): GateExecutionRow[] {
+  return d.db
+    .query<GateExecutionRow, [string]>(
+      `SELECT * FROM gate_executions WHERE revision_id=? ORDER BY rowid ASC`
+    )
+    .all(revisionId);
+}
+
+export function latestGateExecution(d: Db, revisionId: string, gateKey: string): GateExecutionRow | undefined {
+  const row = d.db
+    .query<GateExecutionRow, [string, string]>(
+      `SELECT * FROM gate_executions WHERE revision_id=? AND gate_key=? ORDER BY rowid DESC LIMIT 1`
+    )
+    .get(revisionId, gateKey);
+  return row ?? undefined;
+}
+
 /** Deterministic: 10/10 only when every mandatory gate PASS **and** that gate
  *  carries at least one resolved evidence reference. No LLM vibe score, and a
- *  bare reviewer PASS without evidence can never fabricate 10/10. */
+ *  bare reviewer PASS without evidence can never fabricate 10/10.
+ *
+ *  EXECUTION GATES: for every mission-defined executable gate, the latest
+ *  host-run execution for THIS revision must be PASS and its evidence must
+ *  resolve to a real execution artifact with exit_code=0. This is checked
+ *  independently of the review hook, so a reviewer (or a buggy hook) can never
+ *  turn an executed FAIL into VERIFIED_10_10. */
 export function isRevisionVerified10(d: Db, revision_id: string, mandatory: string[]): boolean {
   if (!mandatory.length) return false;
   const rows = getQualityGates(d, revision_id);
   const lookup = new Map(rows.map((g) => [g.gate_key, g]));
-  for (const k of mandatory) {
+  const execKeys = executableGateKeysForRevision(d, revision_id);
+  const required = [...new Set([...mandatory, ...execKeys])];
+  for (const k of required) {
     const g = lookup.get(k);
     if (!g || g.status !== 'PASS') return false;
     const refs: unknown = g.evidence_refs_json ? safeParseJson(g.evidence_refs_json) : [];
     if (!Array.isArray(refs) || refs.length === 0) return false; // PASS requires evidence
+  }
+  for (const k of execKeys) {
+    const exec = latestGateExecution(d, revision_id, k);
+    if (!exec || exec.status !== 'PASS' || !exec.candidate_hash) return false;
+    const evidence = d.db
+      .query<EvidenceRow, [string, string]>(
+        `SELECT * FROM evidence_artifacts WHERE artifact_id=? AND revision_id=?`
+      )
+      .get(exec.evidence_artifact_id, revision_id);
+    if (!evidence || evidence.kind !== 'execution') return false;
+    if (evidence.bytes <= 0 || evidence.sha256.length !== 64) return false;
+    if (evidence.exit_code !== 0) return false;
   }
   return true;
 }

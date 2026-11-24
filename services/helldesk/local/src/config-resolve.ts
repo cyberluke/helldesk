@@ -116,6 +116,8 @@ export function loadMergedGlobalConfig(extraDirs: string[] = []): MergedGlobalCo
 export interface KiloProviderOptions {
   baseURL: string;
   apiKey?: string;
+  /** Full provider entry (npm/options/models) for faithful headless SDK config. */
+  providerConfig?: Record<string, unknown>;
 }
 
 /** Model context limits as declared by Kilo (`provider.<id>.models.<model>.limit`). */
@@ -214,7 +216,11 @@ export function resolveKiloProviderOptions(providerID: string): KiloProviderOpti
     if (!entry.success) return null;
     const baseURL = entry.data.options.baseURL?.trim();
     if (!baseURL) return null;
-    return { baseURL, ...(entry.data.options.apiKey ? { apiKey: entry.data.options.apiKey } : {}) };
+    return {
+      baseURL,
+      ...(entry.data.options.apiKey ? { apiKey: entry.data.options.apiKey } : {}),
+      providerConfig: entry.data as Record<string, unknown>,
+    };
   } catch {
     return null;
   }

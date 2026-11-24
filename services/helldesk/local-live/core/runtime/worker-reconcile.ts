@@ -10,7 +10,7 @@
 import { z } from 'zod';
 import type { Agent } from '../types';
 
-const SELF = 'http://127.0.0.1:8790';
+const SELF = `http://${process.env.HELLDESK_HOST ?? '127.0.0.1'}:${process.env.HELLDESK_PORT ?? '8790'}`;
 const WorkersDTO = z.object({ workers: z.array(z.object({
   worker_id: z.string(),
   job_id: z.string().nullable().optional(),

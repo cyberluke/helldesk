@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Copy, FolderGit2, Sparkles,
-  ArrowRight, LoaderCircle, Check, Layers, FileText,
+  ArrowRight, LoaderCircle, Check, Layers, FileText, X,
 } from '@/lib/icons'
 import { Link, useParams } from 'react-router-dom'
 import {
@@ -11,6 +11,14 @@ import {
 } from '../lib/engine'
 import TaskShapeMatrix from './TaskShapeMatrix'
 import EnhancePreview from './EnhancePreview'
+import {
+  attachmentLimitMessage,
+  attachmentSpecBlock,
+  isSupportedAttachment,
+  uploadAttachment,
+  type AttachmentMode,
+  type DropAttachment,
+} from '../lib/attachments'
 
 // TaskStudio — the modern HITL launchpad for the local tier.
 // One coherent surface to:
@@ -75,10 +83,85 @@ export default function TaskStudio() {
   const [taskBusy, setTaskBusy] = useState(false)
   const [taskMsg, setTaskMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [createdTicketId, setCreatedTicketId] = useState('')
+  const [attachments, setAttachments] = useState<DropAttachment[]>([])
+  const [attachmentError, setAttachmentError] = useState('')
   // Synchronous guard: `taskBusy` only disables the button after a re-render, so
   // two clicks in the same tick could submit twice without this latch.
   const createLock = useRef(false)
 
+  const readyAttachments = useMemo(
+    () => attachments.flatMap((row) => (row.manifest ? [{ ...row.manifest, mode: row.mode }] : [])),
+    [attachments],
+  )
+  const attachmentsBusy = attachments.some(
+    (row) => row.status === 'extracting' || row.status === 'uploading',
+  )
+  const attachmentErrors = attachments.some((row) => row.status === 'error')
+
+  const processAttachment = async (localId: string, file: File, mode: AttachmentMode) => {
+    try {
+      const manifest = await uploadAttachment(departmentId, file, mode)
+      setAttachments((current) =>
+        current.map((row) =>
+          row.localId === localId ? { ...row, status: 'ready', manifest } : row,
+        ),
+      )
+    } catch (error) {
+      setAttachments((current) =>
+        current.map((row) =>
+          row.localId === localId
+            ? {
+                ...row,
+                status: 'error',
+                error: error instanceof Error ? error.message : String(error),
+              }
+            : row,
+        ),
+      )
+    }
+  }
+
+  const addAttachmentFiles = (files: FileList | File[]) => {
+    const incoming = Array.from(files).filter(isSupportedAttachment)
+    setAttachmentError('')
+    if (!incoming.length) {
+      setAttachmentError('Only images and PDFs are supported.')
+      return
+    }
+    const available = Math.max(0, 8 - attachments.length)
+    if (incoming.length > available) {
+      setAttachmentError(
+        attachmentLimitMessage(attachments.length + incoming.length) ?? 'Too many attachments.',
+      )
+    }
+    const rows = incoming.slice(0, available).map<DropAttachment>((file) => {
+      const kind = file.type === 'application/pdf' || /\.pdf$/i.test(file.name) ? 'pdf' : 'image'
+      return {
+        localId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        file,
+        kind,
+        mode: 'inspiration',
+        previewUrl: kind === 'image' ? URL.createObjectURL(file) : undefined,
+        status: kind === 'pdf' ? 'extracting' : 'uploading',
+      }
+    })
+    setAttachments((current) => [...current, ...rows])
+    for (const row of rows) void processAttachment(row.localId, row.file, row.mode)
+  }
+
+  const setAttachmentMode = (localId: string, mode: AttachmentMode) => {
+    setAttachments((current) =>
+      current.map((row) => (row.localId === localId ? { ...row, mode } : row)),
+    )
+  }
+
+  const removeAttachment = (localId: string) => {
+    setAttachments((current) => {
+      const row = current.find((item) => item.localId === localId)
+      if (row?.previewUrl) URL.revokeObjectURL(row.previewUrl)
+      return current.filter((item) => item.localId !== localId)
+    })
+  }
   // ── task shape (matrix) + prompt enhancer ──
   const [taskType, setTaskType] = useState<TaskType>('engine')
   const [writeTarget, setWriteTarget] = useState<WriteTarget>('workspace')
@@ -144,6 +227,16 @@ export default function TaskStudio() {
       setEnhanceError('Project workspace is required before analysis.')
       return
     }
+    if (attachmentsBusy) {
+      setEnhanceBusy(null)
+      setEnhanceError('Wait for the attachments to finish extracting/uploading before analysis.')
+      return
+    }
+    if (attachmentErrors) {
+      setEnhanceBusy(null)
+      setEnhanceError('Remove the failed attachment(s) before analysis.')
+      return
+    }
     // Analyze profiles the routed repos, so persist the visible routing first.
     // Saving creates/initialises a new workspace (input = output when no output
     // repo is set); this prevents the enhancer CLI from running on an
@@ -171,6 +264,7 @@ export default function TaskStudio() {
         taskType,
         delivery,
         sources: routedSources,
+        attachments: readyAttachments,
         qaFindings,
       })
     setEnhanceBusy(null)
@@ -214,6 +308,14 @@ export default function TaskStudio() {
   const createTask = async () => {
     if (createLock.current) return
     if (!workstationId || !workspace.trim() || !title.trim() || !spec.trim()) return
+    if (attachmentsBusy) {
+      setTaskMsg({ ok: false, text: 'Wait for the attachments to finish extracting/uploading.' })
+      return
+    }
+    if (attachmentErrors) {
+      setTaskMsg({ ok: false, text: 'Remove the failed attachment(s) before creating the task.' })
+      return
+    }
     createLock.current = true
     setTaskBusy(true); setTaskMsg(null); setCreatedTicketId('')
     try {
@@ -231,12 +333,16 @@ export default function TaskStudio() {
       }
       const submittedEnforcer = enforcer
       const prerequisiteCount = dependsOn.length
+      const specWithAttachments = [spec.trim(), attachmentSpecBlock(readyAttachments)]
+        .filter(Boolean)
+        .join('\n')
       const res = await createTaskLocal(departmentId, workstationId, {
         title: title.trim() || 'Untitled task',
-        spec: spec.trim(),
+        spec: specWithAttachments,
         enforcer,
         review_mode: reviewMode === 'inherit' ? undefined : reviewMode,
         depends_on: dependsOn,
+        attachments: readyAttachments,
         engineMatrix: engineOvers.engine ? { mutation: engineOvers } : undefined,
       })
       if (res?.success !== true) {
@@ -262,6 +368,10 @@ export default function TaskStudio() {
       setEnhanceResult(null)
       setEnhanceError(null)
       setPreviewOpen(false)
+      for (const row of attachments) {
+        if (row.previewUrl) URL.revokeObjectURL(row.previewUrl)
+      }
+      setAttachments([])
       setTaskMsg({
         ok: true,
         text: `Task created${createdId ? ` (${createdId.slice(0, 8)})` : ''}${prerequisiteCount ? ` after ${prerequisiteCount} prerequisite${prerequisiteCount > 1 ? 's' : ''}` : ''}. ${enforcerLabel(submittedEnforcer)} is assigned; steer from the Operator-console.`,
@@ -440,6 +550,100 @@ export default function TaskStudio() {
             onChange={(e) => setSpec(e.target.value)}
             placeholder={'Describe the input → output work: what to read from the input repo(s), what to build in the output repo, the contracts to preserve, and how to prove it (tests / evidence).'} />
 
+          <label className="ts-label" style={{ marginTop: 14 }}>
+            Input attachments <span className="ts-opt-note">(images / PDF, optional)</span>
+          </label>
+          <div
+            className="ts-attachments"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault()
+              addAttachmentFiles(event.dataTransfer.files)
+            }}
+          >
+            <input
+              id="task-attachment-input"
+              type="file"
+              multiple
+              accept="image/*,application/pdf"
+              style={{ display: 'none' }}
+              onChange={(event) => {
+                if (event.target.files) addAttachmentFiles(event.target.files)
+                event.target.value = ''
+              }}
+            />
+            <label htmlFor="task-attachment-input" className="ts-attachment-add">
+              + Attach image or PDF
+            </label>
+            <p className="ts-attachment-hint">
+              Image mode: <strong>inspiration</strong> (style/mechanic reference) or{' '}
+              <strong>pixel-perfect</strong> (screenshot comparison required). PDFs become
+              page-referenced markdown + page images.
+            </p>
+            {attachments.length > 0 && (
+              <div className="ts-attachment-list">
+                {attachments.map((row) => (
+                  <div
+                    key={row.localId}
+                    className={'ts-attachment' + (row.status === 'error' ? ' error' : '')}
+                  >
+                    {row.kind === 'image' ? (
+                      row.previewUrl ? (
+                        <img src={row.previewUrl} alt={row.file.name} className="ts-attachment-thumb" />
+                      ) : (
+                        <span className="ts-attachment-ph"><FileText size={18} /></span>
+                      )
+                    ) : row.manifest?.pages?.[0]?.url ? (
+                      <img src={row.manifest.pages[0].url} alt="PDF page 1" className="ts-attachment-thumb" />
+                    ) : (
+                      <span className="ts-attachment-ph"><FileText size={18} /></span>
+                    )}
+                    <div className="ts-attachment-body">
+                      <strong>{row.file.name}</strong>
+                      <small>
+                        {row.kind.toUpperCase()}
+                        {row.manifest?.page_count ? ` · ${row.manifest.page_count} page${row.manifest.page_count === 1 ? '' : 's'}` : ''} ·{' '}
+                        {row.status === 'extracting'
+                          ? 'extracting PDF…'
+                          : row.status === 'uploading'
+                            ? 'uploading…'
+                            : row.status === 'ready'
+                              ? 'ready'
+                              : 'failed'}
+                      </small>
+                      {row.error && <span className="ts-attachment-error">{row.error}</span>}
+                      <div className="ts-attachment-modes" role="group" aria-label="Attachment semantics">
+                        {(['inspiration', 'requirement'] as const).map((mode) => (
+                          <button
+                            key={mode}
+                            type="button"
+                            className={'ts-attachment-mode' + (row.mode === mode ? ' selected' : '')}
+                            onClick={() => setAttachmentMode(row.localId, mode)}
+                          >
+                            {mode === 'inspiration' ? 'Inspiration' : 'Pixel-perfect'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="ts-attachment-remove"
+                      aria-label={`Remove ${row.file.name}`}
+                      onClick={() => removeAttachment(row.localId)}
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {attachmentError && (
+              <div className="ts-toast ts-bad" role="status" style={{ marginTop: 8 }}>
+                {attachmentError}
+              </div>
+            )}
+          </div>
+
           <fieldset className="task-dependencies">
             <legend>Starts after</legend>
             <p>Choose prerequisite tasks. The crew can work elsewhere while these finish.</p>
@@ -470,7 +674,7 @@ export default function TaskStudio() {
 
           <div className="ts-divider" style={{ margin: '16px 0 14px' }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <button className="ts-create" onClick={createTask} disabled={taskBusy || !workstationId || !workspace.trim() || !title.trim() || !spec.trim()}>
+            <button className="ts-create" onClick={createTask} disabled={taskBusy || attachmentsBusy || !workstationId || !workspace.trim() || !title.trim() || !spec.trim()}>
               {taskBusy ? <LoaderCircle size={15} className="spin" /> : <ArrowRight size={15} />}
               Create task{enforcer === 'auto' ? '' : ` · ${enforcerLabel(enforcer)}`}
             </button>
@@ -558,6 +762,23 @@ const TS_CSS = `
 }
 .ts-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(110,231,183,0.14); }
 .ts-area { min-height: 96px; resize: vertical; line-height: 1.5; }
+.ts-attachments { border: 1px dashed var(--line); border-radius: 10px; padding: 10px; background: rgba(255,255,255,.015); }
+.ts-attachment-add { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--accent); cursor: pointer; border: 1px solid rgba(134,239,172,.25); border-radius: 8px; padding: 6px 10px; background: rgba(134,239,172,.06); }
+.ts-attachment-hint { margin: 7px 0 0; font-size: 10px; line-height: 1.5; color: var(--muted); }
+.ts-attachment-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.ts-attachment { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--line); border-radius: 10px; background: rgba(0,0,0,.16); padding: 8px; }
+.ts-attachment.error { border-color: rgba(248,113,113,.35); }
+.ts-attachment-thumb { width: 72px; height: 54px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); background: #000; flex: none; }
+.ts-attachment-ph { width: 72px; height: 54px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); flex: none; }
+.ts-attachment-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ts-attachment-body strong { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ts-attachment-body small { font-size: 10px; color: var(--muted); }
+.ts-attachment-error { font-size: 10px; color: var(--bad); }
+.ts-attachment-modes { display: flex; gap: 4px; margin-top: 3px; }
+.ts-attachment-mode { font-size: 9px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+.ts-attachment-mode.selected { border-color: rgba(134,239,172,.35); background: rgba(134,239,172,.1); color: var(--accent); }
+.ts-attachment-remove { border: none; background: transparent; color: var(--muted); cursor: pointer; padding: 2px; }
+.ts-attachment-remove:hover { color: var(--bad); }
 .ts-field { display: flex; gap: 8px; }
 .ts-field .ts-input { flex: 1; }
 .ts-btn { display: inline-flex; align-items: center; gap: 6px; border-radius: 9px; padding: 9px 12px; font-size: 13px; font-weight: 600; cursor: pointer; border: 1px solid var(--line); background: var(--bg2); color: var(--fg); transition: 0.14s; white-space: nowrap; }
@@ -641,3 +862,4 @@ const TS_CSS = `
 .spin { animation: tspin 0.8s linear infinite; }
 @keyframes tspin { to { transform: rotate(360deg); } }
 `
+

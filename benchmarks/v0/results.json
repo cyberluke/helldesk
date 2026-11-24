@@ -1,0 +1,127 @@
+{
+  "benchmark": "HELLDESK Adversarial Multimodal Benchmark v0",
+  "generatedAt": "2026-11-24T05:47:10.104Z",
+  "pass": true,
+  "checks": [
+    {
+      "id": "M1.host-executed-journal",
+      "ok": true,
+      "detail": "fabricated PASS rejected; repaired revision verified (mis_7dde2cf4e09944bf8c006060ee99cfa8 / fabricated PASS:REJECTED+FAIL genuine repair:VERIFIED_10_10+PASS)"
+    },
+    {
+      "id": "M2.browser-visual-proof",
+      "ok": true,
+      "detail": "BrowserOS gate rejected fabricated visual PASS; CSS repair verified (mis_36da218150b64bd18cd72dff3f260195 / fabricated visual PASS:REJECTED+FAIL CSS repair:VERIFIED_10_10+PASS)"
+    },
+    {
+      "id": "M3.regression-proof",
+      "ok": true,
+      "detail": "visual ratio 0 but clickText failed; repair verified (mis_a1b1beb2914447ada9f00a616c3eb2bc / visual-clean / functional regression:REJECTED+FAIL functional repair:VERIFIED_10_10+PASS)"
+    },
+    {
+      "id": "M3.worker-recovery",
+      "ok": true,
+      "detail": "killed agent retried revision rev_5a2d09ce6cd14934b22082f73835264e without duplication (mis_f86a44c48e954c4c902db3dc5b4554ca / same revision after kill:VERIFIED_10_10+PASS)"
+    },
+    {
+      "id": "M4.dashboard-media",
+      "ok": true,
+      "detail": "dashboard-demo.gif 33.5s 480x270; dashboard-demo.webp 135522 bytes; 6 page captures"
+    },
+    {
+      "id": "M4.no-playwright",
+      "ok": true,
+      "detail": "no Playwright dependency, config, or spec remains"
+    },
+    {
+      "id": "M4.demo-proof-mission",
+      "ok": true,
+      "detail": "dashboard demo projects mis_a1b1beb2914447ada9f00a616c3eb2bc (M3 proof)"
+    }
+  ],
+  "proofRuns": {
+    "m1": {
+      "run": "2026-11-23T22-06-36-163Z",
+      "mission": "mis_7dde2cf4e09944bf8c006060ee99cfa8",
+      "fabricated": "rev_f254a4e56ecb456f9fc148facb804d33",
+      "repaired": "rev_d3b6f5e8a54646fa80549ba7a8e3aced"
+    },
+    "m2": {
+      "run": "2026-11-24T00-21-02-322Z",
+      "mission": "mis_36da218150b64bd18cd72dff3f260195",
+      "fabricated": "rev_73192de9f9a647ebac7e61aa8b73c756",
+      "repaired": "rev_25ebca42ac7f4a4799e003e3e4d0e33a"
+    },
+    "m3": {
+      "run": "2026-11-24T00-29-25-787Z",
+      "mission": "mis_a1b1beb2914447ada9f00a616c3eb2bc",
+      "regression": "rev_cfec7b8832d44d67866e37a566c3e570",
+      "repaired": "rev_8db6ed8cc4474707b76fdbf87b87bf49"
+    },
+    "recovery": {
+      "run": "2026-11-23T22-18-00-064Z",
+      "mission": "mis_f86a44c48e954c4c902db3dc5b4554ca",
+      "revision": "rev_5a2d09ce6cd14934b22082f73835264e"
+    },
+    "demo": {
+      "controlPlane": "127.0.0.1:4791",
+      "dashboard": "127.0.0.1:8792",
+      "proofMission": "mis_a1b1beb2914447ada9f00a616c3eb2bc",
+      "capture": "BrowserOS Neo MCP screenshot tool"
+    }
+  },
+  "media": {
+    "video": {
+      "file": "dashboard-demo.gif",
+      "bytes": 671042,
+      "durationSeconds": 33.5,
+      "width": 480,
+      "height": 270
+    },
+    "webp": {
+      "file": "dashboard-demo.webp",
+      "width": 480,
+      "height": 270,
+      "bytes": 135522,
+      "animated": true
+    },
+    "captures": [
+      {
+        "file": "dashboard-overview.png",
+        "width": 2048,
+        "height": 1152,
+        "bytes": 188738
+      },
+      {
+        "file": "dashboard-kanban.png",
+        "width": 2048,
+        "height": 1152,
+        "bytes": 144881
+      },
+      {
+        "file": "dashboard-verified.png",
+        "width": 2048,
+        "height": 1152,
+        "bytes": 129051
+      },
+      {
+        "file": "dashboard-transcript.png",
+        "width": 2048,
+        "height": 1152,
+        "bytes": 94594
+      },
+      {
+        "file": "dashboard-diff.png",
+        "width": 2048,
+        "height": 1152,
+        "bytes": 93810
+      },
+      {
+        "file": "dashboard-observability.png",
+        "width": 2048,
+        "height": 1152,
+        "bytes": 174316
+      }
+    ]
+  }
+}

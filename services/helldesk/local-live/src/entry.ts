@@ -15,6 +15,8 @@ import { buildHelldeskEnv, type HelldeskEnv, type HelldeskAppEnv } from '../core
 import { getDepartmentDOStub } from '../core/dos/Department.do';
 import { join } from 'node:path';
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { dirname } from 'node:path';
 import { PtyManager, type PtySessionInfo } from '../core/pty/PtyManager';
@@ -74,7 +76,10 @@ mkdirSync(DATA_ROOT, { recursive: true });
 // surface its /v1 config + relays runtime control. Port from its config.json;
 // auth token from its dataDir token file (or config daemon.token).
 const localDir = join(dirname(dirname(import.meta.dir)), 'local');
-const controlConfigPath = join(localDir, 'config.json');
+// Benchmark/demo isolation: point the dashboard at an alternate local control
+// plane config (and therefore an alternate port/token/data dir) without
+// touching the operator's production config.
+const controlConfigPath = process.env.HELLDESK_CONTROL_CONFIG || join(localDir, 'config.json');
 function controlPlaneAddr(): { port: number; token: string } | null {
   try {
     if (!existsSync(controlConfigPath)) return null;
@@ -298,6 +303,131 @@ app.delete('/api/departments/:departmentId/tickets/:ticketId', async (c) => {
 // Department-level status move (mission cards have no workstation binding; the
 // handler routes mis_* to the mission controller by ticket id).
 app.patch('/api/departments/:departmentId/tickets/:ticketId/status', (c) => handleUpdateTicketStatus(c, { workstationId: '', ticketId: c.req.param('ticketId') }));
+
+// ── Task Studio attachments (images + browser-extracted PDFs) ────────────────
+// Local-only store: original file, provenance, PDF markdown and page renders.
+// The browser extracts/renders PDFs (pdfjs) so no native PDF/canvas dependency
+// is added to the server; this endpoint persists the result and serves it back.
+const ATTACHMENTS_ROOT = join(import.meta.dir, '..', 'data', 'attachments');
+const AttachmentMeta = z.object({
+  kind: z.enum(['image', 'pdf']),
+  mode: z.enum(['inspiration', 'requirement']),
+  filename: z.string().min(1).max(255),
+  mime: z.string().max(160),
+  size: z.number().nonnegative(),
+  pageCount: z.number().int().min(0).max(10_000).optional(),
+  pages: z.array(z.object({
+    page: z.number().int().min(1),
+    field: z.string().min(1).max(64),
+  })).max(40).optional(),
+});
+app.post('/api/departments/:departmentId/attachments', async (c) => {
+  const departmentId = c.req.param('departmentId');
+  const form = await c.req.formData().catch(() => null);
+  if (!form) return c.json(resError('multipart/form-data is required'), 400);
+  const file = form.get('file');
+  const manifestRaw = form.get('manifest');
+  if (!(file instanceof File) || typeof manifestRaw !== 'string') {
+    return c.json(resError('file and manifest are required'), 400);
+  }
+  if (file.size <= 0 || file.size > 30 * 1024 * 1024) {
+    return c.json(resError('attachment must be between 1 byte and 30MB'), 400);
+  }
+  let parsedManifest: z.infer<typeof AttachmentMeta>;
+  try {
+    const parsed = AttachmentMeta.safeParse(JSON.parse(manifestRaw));
+    if (!parsed.success) return c.json(resError('invalid attachment manifest'), 400);
+    parsedManifest = parsed.data;
+  } catch {
+    return c.json(resError('invalid attachment manifest JSON'), 400);
+  }
+  const extension = (() => {
+    const match = /\.([a-z0-9]{1,8})$/i.exec(parsedManifest.filename);
+    if (match) return `.${match[1].toLowerCase()}`;
+    return parsedManifest.kind === 'pdf' ? '.pdf' : '.bin';
+  })();
+  const isPdf = parsedManifest.kind === 'pdf' || file.type === 'application/pdf' || extension === '.pdf';
+  if (isPdf && parsedManifest.kind !== 'pdf') {
+    return c.json(resError('PDF attachments must declare kind=pdf'), 400);
+  }
+  if (!isPdf && !file.type.startsWith('image/') && !/^\.(png|jpe?g|webp|gif)$/i.test(extension)) {
+    return c.json(resError('only image/* and application/pdf attachments are supported'), 400);
+  }
+  const attachmentId = `att_${randomUUID().replaceAll('-', '').slice(0, 20)}`;
+  const dir = join(ATTACHMENTS_ROOT, attachmentId);
+  await mkdir(dir, { recursive: true });
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const originalPath = join(dir, `original${extension}`);
+  await writeFile(originalPath, bytes);
+
+  const markdown = typeof form.get('markdown') === 'string' ? String(form.get('markdown')) : '';
+  const markdownPath = markdown ? join(dir, 'extracted.md') : null;
+  if (markdownPath) await writeFile(markdownPath, markdown, 'utf8');
+
+  const pages: Array<{ page: number; path: string; url: string }> = [];
+  for (const page of parsedManifest.pages ?? []) {
+    const pageFile = form.get(page.field);
+    if (!(pageFile instanceof File)) continue;
+    const pagePath = join(dir, `page-${page.page}.png`);
+    await writeFile(pagePath, new Uint8Array(await pageFile.arrayBuffer()));
+    pages.push({
+      page: page.page,
+      path: pagePath,
+      url: `/api/departments/${encodeURIComponent(departmentId)}/attachments/${attachmentId}/page-${page.page}.png`,
+    });
+  }
+
+  const stored = {
+    attachment_id: attachmentId,
+    kind: parsedManifest.kind,
+    mode: parsedManifest.mode,
+    filename: parsedManifest.filename,
+    mime: file.type || parsedManifest.mime,
+    size: file.size,
+    sha256,
+    page_count: parsedManifest.pageCount ?? null,
+    original_path: originalPath,
+    original_url: `/api/departments/${encodeURIComponent(departmentId)}/attachments/${attachmentId}/original${extension}`,
+    markdown_path: markdownPath,
+    markdown_url: markdownPath
+      ? `/api/departments/${encodeURIComponent(departmentId)}/attachments/${attachmentId}/extracted.md`
+      : null,
+    markdown: markdown || null,
+    pages,
+    created_at: new Date().toISOString(),
+  };
+  await writeFile(join(dir, 'manifest.json'), JSON.stringify(stored, null, 2), 'utf8');
+  return c.json(resSuccess(stored), 201);
+});
+app.get('/api/departments/:departmentId/attachments/:attachmentId/:file', async (c) => {
+  const attachmentId = c.req.param('attachmentId');
+  const fileName = c.req.param('file');
+  if (!/^att_[A-Za-z0-9]+$/.test(attachmentId) || !/^[A-Za-z0-9._-]+$/.test(fileName)) {
+    return c.notFound();
+  }
+  const fullPath = join(ATTACHMENTS_ROOT, attachmentId, fileName);
+  try {
+    const data = await readFile(fullPath);
+    const lower = fileName.toLowerCase();
+    const contentType = lower.endsWith('.png')
+      ? 'image/png'
+      : /\.jpe?g$/.test(lower)
+        ? 'image/jpeg'
+        : lower.endsWith('.webp')
+          ? 'image/webp'
+          : lower.endsWith('.gif')
+            ? 'image/gif'
+            : lower.endsWith('.pdf')
+              ? 'application/pdf'
+              : lower.endsWith('.md')
+                ? 'text/markdown; charset=utf-8'
+                : 'application/octet-stream';
+    return c.body(data, 200, { 'Content-Type': contentType });
+  } catch {
+    return c.notFound();
+  }
+});
 app.post('/api/departments/:departmentId/workstations/:workstationId/tickets', (c) => handleCreateTicket(c, c.req.param()));
 app.get('/api/departments/:departmentId/workstations/:workstationId/tickets', (c) => handleListTickets(c, c.req.param()));
 app.get('/api/departments/:departmentId/workstations/:workstationId/tickets/:ticketId', (c) => handleGetTicket(c, c.req.param()));
@@ -856,6 +986,7 @@ const UI_DIST = join(import.meta.dir, "..", "ui", "dist");
 const uiContentType: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",

@@ -75,6 +75,14 @@ async function main(): Promise<void> {
   const userOverride = userOverrideFile && existsSync(userOverrideFile)
     ? readFileSync(userOverrideFile, 'utf-8')
     : arg('--userOverride');
+
+  const filesFile = arg('--filesFile');
+  const attachedFiles = filesFile && existsSync(filesFile)
+    ? (JSON.parse(readFileSync(filesFile, 'utf-8')) as unknown)
+    : [];
+  const files = Array.isArray(attachedFiles)
+    ? attachedFiles.filter((file): file is string => typeof file === 'string' && file.length > 0)
+    : [];
   const kiloBin = arg('--kiloBin');
   const snapshotStore = arg('--snapshotStore');
   const directory = arg('--directory') || workspacePath;
@@ -226,6 +234,7 @@ async function main(): Promise<void> {
       contextWindowTokens: budget.contextWindow,
       inputBudgetTokens: budget.inputBudgetTokens,
       maxOutputTokens: budget.outputBudgetTokens,
+      files,
       format: withFormat ? REVIEW_OUTPUT_FORMAT : undefined,
     });
     let inf = await call(user, true);
