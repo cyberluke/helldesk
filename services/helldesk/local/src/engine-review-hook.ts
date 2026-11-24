@@ -178,6 +178,31 @@ export function makeEngineReviewHook(engine: Engine, gateKeys: string[] = REPORT
         const jobFindings = listAdjudicatedFindings(engine, jobId as string);
         const verdict: ReviewVerdict =
           prev === 'COMPLETED_PASS' ? 'PASS' : (prev === 'INCONCLUSIVE' ? 'INCONCLUSIVE' : 'FINDINGS');
+        // A terminal job still carries its EXECUTED gate evidence. Returning
+        // empty gatePassed/evidenceResolved here re-scored a PASS review as
+        // UNVERIFIED and rejected it (M6 run K: A+B+adjudicator PASS, all gates
+        // PASS, revision REJECTED). Reconstruct the same verification object the
+        // fresh path builds, from the persisted executions + adjudicated findings.
+        const executed = listGateExecutions(engine.d, revisionId)
+          .filter((e) => gates.includes(e.gate_key))
+          .sort((a, b) => a.started_at.localeCompare(b.started_at));
+        const executedByGate = new Map(executed.map((e) => [e.gate_key, e] as const));
+        const hasRealBlockingFinding = jobFindings.some((f) => f.severity === 'BLOCKER' || f.severity === 'HIGH');
+        const executedAllPass = executed.length > 0 && executed.every((e) => e.status === 'PASS');
+        const gatePassed: Record<string, boolean> = {};
+        const gateEvidenceRefs: Record<string, string[]> = {};
+        for (const k of gates) {
+          const exec = executedByGate.get(k);
+          const pass = exec ? (exec.status === 'PASS' && !hasRealBlockingFinding) : prev === 'COMPLETED_PASS';
+          gatePassed[k] = pass;
+          gateEvidenceRefs[k] = exec ? [exec.evidence_artifact_id] : [];
+        }
+        const evidenceResolved = executed.length > 0 ? executedAllPass : prev === 'COMPLETED_PASS';
+        const effectiveVerdict: ReviewVerdict =
+          executed.length > 0 && executedAllPass && !hasRealBlockingFinding
+            && (prev === 'INCONCLUSIVE' || prev === 'COMPLETED_FINDINGS')
+            ? 'PASS'
+            : verdict;
         const formattedFindings = jobFindings.map((f) => `[${f.severity}] ${f.title}`);
         mirrorReviewToChat(engine, {
           missionId,
@@ -185,15 +210,15 @@ export function makeEngineReviewHook(engine: Engine, gateKeys: string[] = REPORT
           revisionId,
           jobId: jobId as string,
           jobResult: prev,
-          finalVerdict: verdict,
+          finalVerdict: effectiveVerdict,
         });
         return {
-          verdict,
+          verdict: effectiveVerdict,
           mandatoryGates: gates,
-          gatePassed: {},
-          gateEvidenceRefs: {},
+          gatePassed,
+          gateEvidenceRefs,
           findings: formattedFindings,
-          evidenceResolved: false,
+          evidenceResolved,
           snapshotId: existing.snapshotId ?? null,
           reviewJobId: jobId,
         };
